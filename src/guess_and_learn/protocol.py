@@ -1,3 +1,4 @@
+import re
 import numpy as np
 from tqdm import tqdm
 import json
@@ -75,10 +76,8 @@ class GnlProtocol:
             if "K" in self.track_config:
                 update_cadence = self.track_config["K"]
             else:
-                try:
-                    update_cadence = int(track_str.split("_")[1])
-                except (IndexError, ValueError):
-                    update_cadence = 1
+                m = re.search(r"(\d+)$", track_str)  # accepts SB200 or SB_200
+                update_cadence = int(m.group(1)) if m else 1
 
             should_update = False
 
@@ -169,8 +168,10 @@ def save_results(error_history, labeled_indices, is_error, params, output_dir, m
                     feats = model.extract_features(X_pool)
                 torch.save(feats.cpu() if torch.is_tensor(feats) else feats, feature_path)
                 print(f"Saved features to {feature_path}")
-            elif not isinstance(X_pool, list):
-                # Fallback: raw pixels (old behaviour)
+            elif not isinstance(X_pool, list):  # vision fallback only
                 X_flat = X_pool.reshape(X_pool.shape[0], -1) if torch.is_tensor(X_pool) else X_pool
                 torch.save(X_flat, feature_path)
                 print(f"Saved features to {feature_path}")
+            else:
+                # raw text + no model → skip feature dump cleanly
+                pass

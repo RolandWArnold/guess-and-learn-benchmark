@@ -11,28 +11,28 @@ def get_dataset(name: str, data_dir: str = "./data"):
     Returns train and test torch.utils.data.Dataset objects.
     """
     if name.lower() == "mnist":
-        # FIX: Added normalization as specified in paper (mean 0.1307, std 0.3081)
+        # Add normalization as specified in paper (mean 0.1307, std 0.3081)
         transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
         train_set = torchvision.datasets.MNIST(root=data_dir, train=True, download=True, transform=transform)
         test_set = torchvision.datasets.MNIST(root=data_dir, train=False, download=True, transform=transform)
         return train_set, test_set
 
     elif name.lower() == "fashion-mnist":
-        # Note: Paper does not specify normalization for Fashion-MNIST. Using standard values.
-        transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.2860,), (0.3530,))])
+        # Paper groups Fashion-MNIST with MNIST → same mean/std
+        transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
         train_set = torchvision.datasets.FashionMNIST(root=data_dir, train=True, download=True, transform=transform)
         test_set = torchvision.datasets.FashionMNIST(root=data_dir, train=False, download=True, transform=transform)
         return train_set, test_set
 
     elif name.lower() == "cifar10":
-        # FIX: Added normalization as specified in paper
+        # Add normalization as specified in paper
         transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=(0.4914, 0.4822, 0.4465), std=(0.2023, 0.1994, 0.2010))])
         train_set = torchvision.datasets.CIFAR10(root=data_dir, train=True, download=True, transform=transform)
         test_set = torchvision.datasets.CIFAR10(root=data_dir, train=False, download=True, transform=transform)
         return train_set, test_set
 
     elif name.lower() == "svhn":
-        # FIX: Added grayscale conversion and normalization as specified in paper
+        # Add grayscale conversion and normalization as specified in paper
         transform = transforms.Compose([transforms.Grayscale(num_output_channels=1), transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])  # Using standard 0.5/0.5 for grayscale
         train_set = torchvision.datasets.SVHN(root=data_dir, split="train", download=True, transform=transform)
         test_set = torchvision.datasets.SVHN(root=data_dir, split="test", download=True, transform=transform)

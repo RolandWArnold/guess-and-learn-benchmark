@@ -1,7 +1,9 @@
 from .datasets import get_data_for_protocol
+import torchvision.transforms as T
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import KNeighborsClassifier
 import numpy as np
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoModel
@@ -65,6 +67,11 @@ class KnnModel(GnlModel):
         return torch.tensor(proba, dtype=torch.float32)
 
     def update(self, X_labeled, Y_labeled, track_config):
+        # ── guard: k cannot exceed available samples ────────────────────────────
+        k = min(self.n_neighbors, len(X_labeled))
+        if k != self.n_neighbors: # rebuild with smaller k
+            self.model = KNeighborsClassifier(n_neighbors=k)
+            self.n_neighbors = k # keep attribute in sync
         X_flat = self._flat(X_labeled)
         Y_np = Y_labeled.cpu().numpy()
         if self.num_classes is None:
@@ -80,7 +87,8 @@ class PerceptronModel(GnlModel):
     Forward path & probabilities stay identical.
     """
 
-    def __init__(self, input_dim, num_classes, lr=1.0, device="cpu"):
+    # default η = 0.1 as per paper; overridable via track_config
+    def __init__(self, input_dim, num_classes, lr=0.1, device="cpu"):
         super().__init__(device)
         self.lr = lr
         self.model = nn.Linear(input_dim, num_classes, bias=True).to(device)
@@ -183,6 +191,104 @@ class CnnModel(GnlModel):
             return self.model.features(X.to(self.device)).flatten(1)
 
 
+# ---------------------------------------------------------------------#
+#  TEXT-SPECIFIC MODELS (AG News)                                      #
+# ---------------------------------------------------------------------#
+
+from sklearn.feature_extraction.text import TfidfVectorizer  # pylint: disable=wrong-import-order
+
+
+class TextPerceptronModel(GnlModel):
+    """Perceptron with on-the-fly TF-IDF vectorisation for raw strings."""
+
+    def __init__(self, num_classes, max_feat=20000, lr=0.1, device="cpu"):
+        super().__init__(device)
+        self.vec = TfidfVectorizer(max_features=max_feat)
+        self.lr = lr
+        self.num_classes = num_classes
+        self.lin = None  # nn.Linear created after vectoriser is fitted
+
+    # ----- helpers ----------------------------------------------------
+    def _featurise(self, texts):
+        X = self.vec.transform(texts).toarray()
+        return torch.tensor(X, dtype=torch.float32, device=self.device)
+
+    # ----- API --------------------------------------------------------
+    def predict(self, X):
+        if self.lin is None:
+            return torch.randint(0, self.num_classes, (len(X),), dtype=torch.long)
+        with torch.no_grad():
+            logits = self.lin(self._featurise(X))
+        return torch.argmax(torch.softmax(logits, dim=1), dim=1)
+
+    def predict_proba(self, X):
+        if self.lin is None:
+            return torch.ones(len(X), self.num_classes) / self.num_classes
+        with torch.no_grad():
+            logits = self.lin(self._featurise(X))
+        return torch.softmax(logits, dim=1)
+
+    def update(self, X_labeled, Y_labeled, track_config):
+        """
+        First call: fit TF-IDF vectoriser and create Linear layer.
+        Thereafter: standard perceptron weight updates.
+        """
+        if self.lin is None:
+            self.vec.fit(X_labeled)
+            in_dim = len(self.vec.get_feature_names_out())
+            self.lin = nn.Linear(in_dim, self.num_classes, bias=True).to(self.device)
+            nn.init.xavier_uniform_(self.lin.weight)
+            nn.init.zeros_(self.lin.bias)
+
+        X_vec = self._featurise(X_labeled)
+        for x_vec, y_true in zip(X_vec, Y_labeled):
+            y_true = int(y_true)
+            logits = self.lin(x_vec.unsqueeze(0))
+            y_pred = int(torch.argmax(logits))
+            if y_pred != y_true:
+                self.lin.weight.data[y_true] += self.lr * x_vec
+                self.lin.weight.data[y_pred] -= self.lr * x_vec
+                self.lin.bias.data[y_true] += self.lr
+                self.lin.bias.data[y_pred] -= self.lr
+
+
+class TextKnnModel(KnnModel):
+    """k-NN over TF-IDF features for raw‐string datasets like AG News."""
+
+    def __init__(self, n_neighbors, num_classes, max_feat=20000, **kwargs):
+        super().__init__(n_neighbors=n_neighbors, num_classes=num_classes, **kwargs)
+        self.vec = TfidfVectorizer(max_features=max_feat)
+
+    def _flat(self, X):
+        if isinstance(X, list):
+            return self.vec.transform(X).toarray()
+        return super()._flat(X)
+
+    def predict(self, X):
+        n = len(X) if isinstance(X, list) else X.shape[0]
+        if not self.is_fitted:
+            if self.num_classes is None:
+                raise ValueError("num_classes not set for cold-start prediction.")
+            return torch.randint(0, self.num_classes, (n,), dtype=torch.long)
+        return torch.tensor(self.model.predict(self._flat(X)), dtype=torch.long)
+
+    def predict_proba(self, X):
+        n = len(X) if isinstance(X, list) else X.shape[0]
+        if not self.is_fitted:
+            if self.num_classes is None:
+                raise ValueError("num_classes not set for cold-start proba.")
+            return torch.ones(n, self.num_classes) / self.num_classes
+        proba = self.model.predict_proba(self._flat(X))
+        return torch.tensor(proba, dtype=torch.float32)
+
+    # Need to fit TF-IDF vectoriser the first time.
+    def update(self, X_labeled, Y_labeled, track_config):
+        if not hasattr(self.vec, "vocabulary_"):
+            self.vec.fit(X_labeled)
+        super().update(X_labeled, Y_labeled, track_config)
+
+
+
 # --- Pretrained Model Wrapper -----------------------------------------------
 class PretrainedModelWrapper(GnlModel):
     def __init__(self, model_name, num_classes, track_config, device="cpu"):
@@ -209,6 +315,21 @@ class PretrainedModelWrapper(GnlModel):
 
         self._configure_for_track()
 
+        # ----------- vision pre-processing (Resize→RGB→Normalise) ------
+        self._vision_tx = T.Compose(
+            [
+                T.Resize(224),
+                T.Lambda(lambda img: img.repeat(3, 1, 1) if img.shape[0] == 1 else img),
+            ]
+        )
+
+    # ------------------------------------------------------------------
+    def _prep_vision(self, x_batch: torch.Tensor) -> torch.Tensor:
+        if x_batch.shape[-1] != 224:
+            x_batch = torch.stack([self._vision_tx(img) for img in x_batch])
+        return x_batch.to(self.device)
+
+    # ------------------------------------------------------------------
     def _configure_for_track(self):
         # recognise suffixes like G&L-PO_1
         is_po_track = self.track_config["track"].startswith("G&L-PO")
@@ -235,6 +356,8 @@ class PretrainedModelWrapper(GnlModel):
         params = [p for p in self.model.parameters() if p.requires_grad]
         if hasattr(self, "classifier"):
             params.extend([p for p in self.classifier.parameters() if p.requires_grad])
+        # de-duplicate (ViT/ResNet heads were appearing twice)
+        params = list({id(p): p for p in params}.values())
 
         if "resnet" in self.model_name and is_po_track:
             self.optimizer = optim.SGD(params, lr=self.track_config.get("lr", 0.01))
@@ -266,71 +389,72 @@ class PretrainedModelWrapper(GnlModel):
 
             # Vision Transformer
             elif "vit" in self.model_name:
-                outputs = self.model(pixel_values=X.to(self.device))
+                outputs = self.model(pixel_values=self._prep_vision(X))
                 logits = self.classifier(outputs.last_hidden_state[:, 0])
 
             # ResNet-50
             else:
-                logits = self.model(X.to(self.device))
+                logits = self.model(self._prep_vision(X))
 
         return torch.softmax(logits, dim=1)
 
     # unchanged except ‘startswith’ for suffix-robust track detection
     def update(self, X_labeled, Y_labeled, track_config):
+        """
+        Online (SO/PO) and batch (SB/PB) fine-tuning, with vision inputs
+        automatically resized → RGB → normalised via _prep_vision().
+        """
         self.model.train()
         if hasattr(self, "classifier"):
             self.classifier.train()
 
-        # recognise e.g. G&L-SO_50 or G&L-PO_1
         track_str = track_config["track"]
-        is_online_track = track_str.startswith("G&L-SO") or track_str.startswith("G&L-PO")
+        is_online_track = track_str.startswith(("G&L-SO", "G&L-PO"))
 
         if is_online_track:
-            # --- Online update (single most recent sample) ------------------
-            if self.tokenizer:  # text
+            # -------- online update: only the newest sample ----------
+            if self.tokenizer:  # TEXT
                 data = [X_labeled[-1]]
                 target = Y_labeled[-1:].to(self.device)
-            else:  # image
+            else:  # IMAGE
                 data = X_labeled[-1:].to(self.device)
                 target = Y_labeled[-1:].to(self.device)
 
             self.optimizer.zero_grad()
-            if self.tokenizer:
+            if self.tokenizer:  # BERT
                 inputs = self.tokenizer(data, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
                 logits = self.model(**inputs).logits
-            elif "vit" in self.model_name:
-                logits = self.classifier(self.model(pixel_values=data).last_hidden_state[:, 0])
-            else:  # ResNet
-                logits = self.model(data)
+
+            elif "vit" in self.model_name:  # ViT
+                pv = self._prep_vision(data)
+                logits = self.classifier(self.model(pixel_values=pv).last_hidden_state[:, 0])
+
+            else:  # ResNet-50
+                logits = self.model(self._prep_vision(data))
 
             loss = self.loss_fn(logits, target)
             loss.backward()
             self.optimizer.step()
 
         else:
-            # --- Batch update (PB / SB) ------------------------------------
+            # -------- batch update: SB / PB every K samples ----------
             epochs = track_config.get("epochs_per_update", 3)
             batch_size = track_config.get("train_batch_size", 16)
 
-            if self.tokenizer:  # text batches
+            if self.tokenizer:  # TEXT batches
                 for _ in range(epochs):
                     for i in range(0, len(X_labeled), batch_size):
                         texts = X_labeled[i : i + batch_size]
                         labels = Y_labeled[i : i + batch_size].to(self.device)
-                        inputs = self.tokenizer(
-                            texts,
-                            return_tensors="pt",
-                            padding=True,
-                            truncation=True,
-                            max_length=512,
-                        ).to(self.device)
+                        inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
 
                         self.optimizer.zero_grad()
                         logits = self.model(**inputs).logits
                         loss = self.loss_fn(logits, labels)
                         loss.backward()
                         self.optimizer.step()
-            else:  # image batches
+
+            else:  # IMAGE batches
                 loader = torch.utils.data.DataLoader(
                     TensorDataset(X_labeled, Y_labeled),
                     batch_size=batch_size,
@@ -339,11 +463,14 @@ class PretrainedModelWrapper(GnlModel):
                 for _ in range(epochs):
                     for data, target in loader:
                         data, target = data.to(self.device), target.to(self.device)
+
                         self.optimizer.zero_grad()
                         if "vit" in self.model_name:
-                            logits = self.classifier(self.model(pixel_values=data).last_hidden_state[:, 0])
-                        else:
-                            logits = self.model(data)
+                            pv = self._prep_vision(data)
+                            logits = self.classifier(self.model(pixel_values=pv).last_hidden_state[:, 0])
+                        else:  # ResNet-50
+                            logits = self.model(self._prep_vision(data))
+
                         loss = self.loss_fn(logits, target)
                         loss.backward()
                         self.optimizer.step()
@@ -351,16 +478,22 @@ class PretrainedModelWrapper(GnlModel):
     # feature extractor for save_results()
     def extract_features(self, X):
         with torch.no_grad():
+            # ---------- TEXT ------------------------------------------
             if self.tokenizer:  # BERT CLS embedding
                 texts = X if isinstance(X, list) else X.tolist()
                 inp = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
                 backbone = getattr(self.model, "bert", None) or getattr(self.model, "roberta", None) or getattr(self.model, "backbone", None)
                 hidden = backbone(**inp).last_hidden_state[:, 0]
                 return hidden
+
+            # ---------- ViT -------------------------------------------
             elif "vit" in self.model_name:
-                return self.model(pixel_values=X.to(self.device)).last_hidden_state[:, 0]
-            else:  # ResNet
-                x = self.model.maxpool(self.model.relu(self.model.bn1(self.model.conv1(X.to(self.device)))))
+                return self.model(pixel_values=self._prep_vision(X)).last_hidden_state[:, 0]
+
+            # ---------- ResNet-50 -------------------------------------
+            else:
+                x = self._prep_vision(X)
+                x = self.model.maxpool(self.model.relu(self.model.bn1(self.model.conv1(x))))
                 feats = self.model.avgpool(self.model.layer4(self.model.layer3(self.model.layer2(self.model.layer1(x)))))
                 return torch.flatten(feats, 1)
 
@@ -376,12 +509,17 @@ def get_model(name, dataset_name, device, track_config=None):
         input_shape = None
 
     if name == "knn":
+        if dataset_name.lower() == "ag_news":
+            return TextKnnModel(n_neighbors=7, num_classes=num_classes)
         return KnnModel(n_neighbors=7, num_classes=num_classes)
 
     elif name == "perceptron":
+        lr = track_config.get("lr", 0.1) if track_config else 0.1
+        if dataset_name.lower() == "ag_news":
+            return TextPerceptronModel(num_classes, lr=lr, device=device)
         if input_shape is None:
             raise ValueError("Cannot determine input shape for perceptron")
-        return PerceptronModel(np.prod(input_shape), num_classes, lr=1.0, device=device)
+        return PerceptronModel(np.prod(input_shape), num_classes, lr=lr, device=device)
 
     elif name == "cnn":
         if input_shape is None:
