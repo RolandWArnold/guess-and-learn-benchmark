@@ -46,7 +46,8 @@ class GnlProtocol:
                 # Handle text data
                 x_t = [self.X_pool[selected_pool_idx]]
             else:
-                x_t = self.X_pool[selected_pool_idx].unsqueeze(0)
+                x_raw = self.X_pool[selected_pool_idx]
+                x_t = x_raw.unsqueeze(0) if torch.is_tensor(x_raw) else [x_raw]
 
             y_t_true = self.Y_pool[selected_pool_idx]
             y_t_pred = self.model.predict(x_t)
@@ -161,7 +162,11 @@ def save_results(
 
     # ------------- directory & filename handling ----------------------
     os.makedirs(output_dir, exist_ok=True)
-    fname_base = f"{params['dataset']}_{params['model']}_{params['strategy']}_" f"{params['track']}_seed{params['seed']}"
+    subset_str = f"_s{params['subset']}" if params.get("subset") else ""
+    fname_base = (
+        f"{params['dataset']}_{params['model']}_{params['strategy']}_"
+        f"{params['track']}_seed{params['seed']}{subset_str}"
+    )
 
     # ---------------- JSON metrics dump -------------------------------
     results_path = os.path.join(output_dir, f"{fname_base}_results.json")

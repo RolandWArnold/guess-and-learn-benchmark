@@ -25,19 +25,25 @@ from guess_and_learn.io_utils import s3_enabled, s3_exists, s3_download, s3_uplo
 
 datasets.config.DOWNLOAD_MODE = datasets.DownloadMode.REUSE_CACHE_IF_EXISTS
 
+torch.backends.cudnn.enabled = True
+torch.backends.nnpack.enabled = False
+
 
 # ────────────────────────────────────────────────────────────────────
 # 1.  Per-experiment worker
 # ────────────────────────────────────────────────────────────────────
-def _exp_id(seed: int, dataset: str, model: str, strategy: str, track: str) -> str:
-    return f"{dataset}_{model}_{strategy}_{track}_seed{seed}"
+def _exp_id(seed: int, dataset: str, model: str, strategy: str, track: str, subset_cap: int | None) -> str:
+    base_name = f"{dataset}_{model}_{strategy}_{track}_seed{seed}"
+    if subset_cap:
+        base_name += f"_s{subset_cap}"
+    return base_name
 
 
 def run_single_experiment(exp_tuple):
     (seed, dataset, model_name, strategy_name, track, K, device, reset_weights, subset_cap, output_dir) = exp_tuple
     start = time.time()
 
-    exp_tag = _exp_id(seed, dataset, model_name, strategy_name, track)
+    exp_tag = _exp_id(seed, dataset, model_name, strategy_name, track, subset_cap)
     results_p = Path(output_dir) / f"{exp_tag}_results.json"
 
     # --------------------------------------------------------------- #
@@ -80,7 +86,7 @@ def run_single_experiment(exp_tuple):
     proto = GnlProtocol(model, strategy, X, Y, track_cfg)
     error_hist, lab_ix, is_err = proto.run()
 
-    params = dict(seed=seed, dataset=dataset, model=model_name, strategy=strategy_name, track=track)
+    params = dict(seed=seed, dataset=dataset, model=model_name, strategy=strategy_name, track=track, subset=subset_cap)
     duration = time.time() - start
 
     # persist locally
@@ -110,8 +116,8 @@ def expand_grid(args) -> list[tuple]:
     tracks = args.tracks.split(",") if args.tracks else DEFAULT_TRACKS
     seeds = args.seeds
 
-    models_v = [m for m in all_models if not m.startswith("text-")]
     models_t = [m for m in all_models if m.startswith("text-") or m == "bert-base"]
+    models_v = [m for m in all_models if m not in models_t]
 
     # dataset-specific pool caps (csv: ds:N,ds2:M)
     subset_map = {}
@@ -121,6 +127,7 @@ def expand_grid(args) -> list[tuple]:
         except ValueError:
             print("⚠️  Malformed --subset_map; ignoring.", file=sys.stderr)
 
+    pretrained_models = {"resnet50", "vit-b-16", "bert-base"}
     device = torch.device(args.devices)
     jobs = []
 
@@ -128,6 +135,15 @@ def expand_grid(args) -> list[tuple]:
         K = int(re.search(r"(\d+)$", track).group(1)) if re.search(r"(\d+)$", track) else 1
         mdl_list = models_t if ds == "ag_news" else models_v
         for mdl in mdl_list:
+            # Add this filter to skip invalid model/track pairs
+            is_pretrained_model = mdl in pretrained_models
+            is_pretrained_track = track.startswith("G&L-P")
+
+            if is_pretrained_model and not is_pretrained_track:
+                continue  # Skip running a pretrained model on a scratch track
+            if not is_pretrained_model and is_pretrained_track:
+                continue  # Skip running a scratch model on a pretrained track
+
             cap = subset_map.get(ds, args.subset)
             jobs.append((seed, ds, mdl, strat, track, K, device, args.reset_weights, cap, args.output_dir))
     return jobs
@@ -139,7 +155,7 @@ def expand_grid(args) -> list[tuple]:
 def main():
     # ensure safe mp start for PyTorch
     try:
-        mp.set_start_method("fork")
+        mp.set_start_method("spawn")
     except RuntimeError:
         pass
 
@@ -147,7 +163,7 @@ def main():
     ap.add_argument("--all", action="store_true", help="Run the full default grid")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
 
-    default_device = "mps" if torch.backends.mps.is_available() else "cpu"
+    default_device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     ap.add_argument("--devices", default=default_device)
     ap.add_argument("--reset-weights", action="store_true")
 

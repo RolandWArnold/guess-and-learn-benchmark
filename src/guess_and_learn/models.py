@@ -31,8 +31,8 @@ HF_CACHE.mkdir(parents=True, exist_ok=True)
 
 # --- Base Model Wrapper ------------------------------------------------------
 class GnlModel:
-    def __init__(self, device="cpu"):
-        self.device = device
+    def __init__(self, device=None):
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def predict(self, X):
         raise NotImplementedError
@@ -113,7 +113,7 @@ class PerceptronModel(GnlModel):
     """
 
     # default η = 0.1 as per paper; overridable via track_config
-    def __init__(self, input_dim, num_classes, lr=0.1, device="cpu"):
+    def __init__(self, input_dim, num_classes, lr=0.1, device=None):
         super().__init__(device)
         self.lr = lr
         self.model = nn.Linear(input_dim, num_classes, bias=True).to(device)
@@ -196,7 +196,7 @@ class SimpleCnn(nn.Module):
 
 class CnnModel(GnlModel):
     # (identical except feature extractor override)
-    def __init__(self, in_channels, num_classes, input_size=32, lr=0.01, device="cpu"):
+    def __init__(self, in_channels, num_classes, input_size=32, lr=0.01, device=None):
         super().__init__(device)
         self.model = SimpleCnn(in_channels, num_classes, input_size).to(device)
         self.optimizer = optim.SGD(self.model.parameters(), lr=lr)
@@ -252,7 +252,7 @@ class TextPerceptronModel(GnlModel):
     """Perceptron using a PRE-FITTED TF-IDF vectoriser."""
 
     # FIX: Init now accepts a pre-fitted vectorizer and input_dim
-    def __init__(self, input_dim, num_classes, vectorizer, lr=0.1, device="cpu"):
+    def __init__(self, input_dim, num_classes, vectorizer, lr=0.1, device=None):
         super().__init__(device)
         self.vec = vectorizer  # Use the passed, pre-fitted vectorizer
         self.lr = lr
@@ -359,7 +359,7 @@ class TextKnnModel(KnnModel):
 
 # --- Pretrained Model Wrapper -----------------------------------------------
 class PretrainedModelWrapper(GnlModel):
-    def __init__(self, model_name, num_classes, track_config, device="cpu"):
+    def __init__(self, model_name, num_classes, track_config, device=None):
         super().__init__(device)
         self.model_name = model_name
         self.tokenizer = None
