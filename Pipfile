@@ -11,6 +11,14 @@ hdbscan = "*"
 matplotlib = "*"
 seaborn = "*"
 pillow = "*"
+tqdm = "*"
+torch = "*"
+torchvision = "*"
+torchaudio = "*"
+huggingface-hub = "*"
+datasets = "*"
+transformers = "*"
+scipy = "*"
 
 [dev-packages]
 
