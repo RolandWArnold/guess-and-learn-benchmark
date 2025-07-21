@@ -2,7 +2,7 @@ import argparse
 import torch
 
 torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark     = False
+torch.backends.cudnn.benchmark = False
 
 import numpy as np
 import random

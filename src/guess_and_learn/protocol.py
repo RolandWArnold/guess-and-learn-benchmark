@@ -153,11 +153,7 @@ def save_results(
                 "is_error": is_error,
                 "final_error_count": error_history[-1] if error_history else 0,
                 "final_error_rate": error_history[-1] / len(error_history) if error_history else 0,
-                "rng_state": {
-                    "python_random": random.getstate(),
-                    "numpy_random": np.random.get_state(),
-                    "torch_random": torch.random.get_rng_state().tolist()
-                }
+                "rng_state": {"python_random": random.getstate(), "numpy_random": np.random.get_state(), "torch_random": torch.random.get_rng_state().tolist()},
             },
             f,
             indent=2,

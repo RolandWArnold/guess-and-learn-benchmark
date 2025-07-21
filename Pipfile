@@ -19,6 +19,7 @@ huggingface-hub = "*"
 datasets = "*"
 transformers = "*"
 scipy = "*"
+black = {extras = ["jupyter"], version = "*"}
 
 [dev-packages]
 

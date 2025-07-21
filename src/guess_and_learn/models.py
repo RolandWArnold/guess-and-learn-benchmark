@@ -66,7 +66,7 @@ class KnnModel(GnlModel):
         if not self.is_fitted:
             if self.num_classes is None:
                 raise ValueError("num_classes not set for cold-start proba.")
-            return (torch.ones(X.shape[0], self.num_classes, dtype=torch.float32, device=self.device) / self.num_classes)
+            return torch.ones(X.shape[0], self.num_classes, dtype=torch.float32, device=self.device) / self.num_classes
         proba = self.model.predict_proba(self._flat(X))
         return torch.tensor(proba, dtype=torch.float32, device=self.device)
 
@@ -134,10 +134,6 @@ class PerceptronModel(GnlModel):
         nn.init.xavier_uniform_(self.model.weight)
         nn.init.zeros_(self.model.bias)
 
-        opt_cls      = self.optimizer.__class__
-        opt_defaults = self.optimizer.defaults.copy()
-        opt_defaults.pop("params", None)
-        self.optimizer = opt_cls(self.model.parameters(), **opt_defaults)
 
 # --- Simple CNN Model -------------------------------------------
 class SimpleCnn(nn.Module):
@@ -177,7 +173,9 @@ class SimpleCnn(nn.Module):
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
+
         self.apply(_w)
+
 
 class CnnModel(GnlModel):
     # (identical except feature extractor override)
@@ -219,17 +217,19 @@ class CnnModel(GnlModel):
         self.model.reinit()
 
         # 2) Recreate the optimiser with the same class & hyper-parameters
-        opt_cls      = self.optimizer.__class__          # e.g. torch.optim.SGD / AdamW
-        opt_defaults = self.optimizer.defaults.copy()    # lr, momentum, betas, etc.
+        opt_cls = self.optimizer.__class__  # e.g. torch.optim.SGD / AdamW
+        opt_defaults = self.optimizer.defaults.copy()  # lr, momentum, betas, etc.
 
         # ‘params’ is injected by torch into each param_group – remove if present
         opt_defaults.pop("params", None)
 
         self.optimizer = opt_cls(self.model.parameters(), **opt_defaults)
 
+
 # ---------------------------------------------------------------------#
 #  TEXT-SPECIFIC MODELS (AG News)                                      #
 # ---------------------------------------------------------------------#
+
 
 class TextPerceptronModel(GnlModel):
     """Perceptron using a PRE-FITTED TF-IDF vectoriser."""
@@ -292,6 +292,7 @@ class TextPerceptronModel(GnlModel):
         nn.init.xavier_uniform_(self.lin.weight)
         nn.init.zeros_(self.lin.bias)
 
+
 class TextKnnModel(KnnModel):
     """k-NN over PRE-FITTED TF-IDF features for raw-string datasets."""
 
@@ -319,7 +320,7 @@ class TextKnnModel(KnnModel):
         if not self.is_fitted:
             if self.num_classes is None:
                 raise ValueError("num_classes not set for cold-start proba.")
-            return (torch.ones(n, self.num_classes, dtype=torch.float32, device=self.device) / self.num_classes)
+            return torch.ones(n, self.num_classes, dtype=torch.float32, device=self.device) / self.num_classes
         proba = self.model.predict_proba(self._flat(X))
         return torch.tensor(proba, dtype=torch.float32, device=self.device)
 
@@ -353,13 +354,9 @@ class PretrainedModelWrapper(GnlModel):
         # 1. Load model / tokenizer / classifier
         # ---------------------------------------------------------------
         if "bert" in model_name:
-            self.model = AutoModelForSequenceClassification.from_pretrained(
-                model_name, num_labels=num_classes
-            ).to(device)
+            self.model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=num_classes).to(device)
             self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            self.feature_extractor = getattr(
-                self.model, "bert", getattr(self.model, "roberta", None)
-            )
+            self.feature_extractor = getattr(self.model, "bert", getattr(self.model, "roberta", None))
 
         elif "resnet" in model_name:
             self.model = torchvision.models.resnet50(weights="IMAGENET1K_V1")
@@ -380,9 +377,7 @@ class PretrainedModelWrapper(GnlModel):
         # ---------------------------------------------------------------
         self._initial_state = {
             "model": copy.deepcopy(self.model.state_dict()),
-            "classifier": copy.deepcopy(
-                getattr(self, "classifier", nn.Identity()).state_dict()
-            ),
+            "classifier": copy.deepcopy(getattr(self, "classifier", nn.Identity()).state_dict()),
         }
 
         # ---------------------------------------------------------------
@@ -396,15 +391,10 @@ class PretrainedModelWrapper(GnlModel):
         self._vision_tx = T.Compose(
             [
                 T.Resize(224),
-                T.Lambda(
-                    lambda img: img.repeat(3, 1, 1) if img.shape[0] == 1 else img
-                ),
-                T.Normalize(
-                    (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
-                ),  # ImageNet μ/σ
+                T.Lambda(lambda img: img.repeat(3, 1, 1) if img.shape[0] == 1 else img),
+                T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),  # ImageNet μ/σ
             ]
         )
-
 
     def _prep_vision(self, x_batch: torch.Tensor) -> torch.Tensor:
         x_batch = x_batch.clamp(0.0, 1.0)
@@ -547,6 +537,7 @@ class PretrainedModelWrapper(GnlModel):
 
         # 2. Re-configure trainability & create a fresh optimiser
         self._configure_for_track()
+
 
 # --- Factory -----------------------------------------------------------------
 def get_model(name, dataset_name, device, track_config=None):
