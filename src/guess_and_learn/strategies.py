@@ -2,16 +2,20 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 
+
 class AcquisitionStrategy:
     def select(self, model, unlabeled_indices, X_pool):
         raise NotImplementedError
+
 
 class RandomStrategy(AcquisitionStrategy):
     def select(self, model, unlabeled_indices, X_pool):
         return np.random.choice(unlabeled_indices)
 
+
 class ConfidenceStrategy(AcquisitionStrategy):
     """Select the example with HIGHEST confidence (easy-first)"""
+
     def select(self, model, unlabeled_indices, X_pool):
         with torch.no_grad():
             if isinstance(X_pool, list):
@@ -25,8 +29,10 @@ class ConfidenceStrategy(AcquisitionStrategy):
             best_idx = torch.argmax(confidence).item()
             return unlabeled_indices[best_idx]
 
+
 class LeastConfidenceStrategy(AcquisitionStrategy):
     """Select the example with LOWEST confidence (uncertainty sampling)"""
+
     def select(self, model, unlabeled_indices, X_pool):
         with torch.no_grad():
             if isinstance(X_pool, list):
@@ -40,8 +46,10 @@ class LeastConfidenceStrategy(AcquisitionStrategy):
             worst_idx = torch.argmin(confidence).item()
             return unlabeled_indices[worst_idx]
 
+
 class MarginStrategy(AcquisitionStrategy):
     """Select the example with SMALLEST margin (difference between top 2 predictions)"""
+
     def select(self, model, unlabeled_indices, X_pool):
         with torch.no_grad():
             if isinstance(X_pool, list):
@@ -56,8 +64,10 @@ class MarginStrategy(AcquisitionStrategy):
             best_idx = torch.argmin(margins).item()
             return unlabeled_indices[best_idx]
 
+
 class EntropyStrategy(AcquisitionStrategy):
     """Select the example with HIGHEST entropy (most uncertain)"""
+
     def select(self, model, unlabeled_indices, X_pool):
         with torch.no_grad():
             if isinstance(X_pool, list):
@@ -72,14 +82,9 @@ class EntropyStrategy(AcquisitionStrategy):
             best_idx = torch.argmax(entropy).item()
             return unlabeled_indices[best_idx]
 
+
 def get_strategy(name: str):
-    strategies = {
-        'random': RandomStrategy,
-        'confidence': ConfidenceStrategy,
-        'least_confidence': LeastConfidenceStrategy,
-        'margin': MarginStrategy,
-        'entropy': EntropyStrategy
-    }
+    strategies = {"random": RandomStrategy, "confidence": ConfidenceStrategy, "least_confidence": LeastConfidenceStrategy, "margin": MarginStrategy, "entropy": EntropyStrategy}
     if name.lower() in strategies:
         return strategies[name.lower()]()
     else:

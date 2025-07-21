@@ -5,6 +5,7 @@ import os
 import matplotlib.pyplot as plt
 import torch
 
+
 class GnlProtocol:
     def __init__(self, model, strategy, X_pool, Y_pool, track_config):
         self.model = model
@@ -62,13 +63,13 @@ class GnlProtocol:
 
             # Step 5: Update model based on track rules
             # Model update happens AFTER prediction and error counting
-            update_cadence = self.track_config.get('K', 1)
+            update_cadence = self.track_config.get("K", 1)
             should_update = False
 
-            if self.track_config['track'] in ['G&L-SO', 'G&L-PO']:
+            if self.track_config["track"] in ["G&L-SO", "G&L-PO"]:
                 # Online tracks: update after every sample
                 should_update = True
-            elif self.track_config['track'] in ['G&L-SB', 'G&L-PB']:
+            elif self.track_config["track"] in ["G&L-SB", "G&L-PB"]:
                 # Batch tracks: update every K samples
                 if len(self.labeled_indices) % update_cadence == 0:
                     should_update = True
@@ -85,9 +86,10 @@ class GnlProtocol:
                 pbar.set_description(f"G&L Protocol (Updating model with {len(self.labeled_indices)} labels)")
                 self.model.update(X_labeled, Y_labeled, self.track_config)
 
-            pbar.set_postfix({'errors': self.cumulative_errors, 'error_rate': f"{self.cumulative_errors/(t+1):.3f}"})
+            pbar.set_postfix({"errors": self.cumulative_errors, "error_rate": f"{self.cumulative_errors/(t+1):.3f}"})
 
         return self.error_history, self.labeled_indices, self.is_error
+
 
 def save_results(error_history, labeled_indices, is_error, params, output_dir, X_pool=None, Y_pool=None):
     if not os.path.exists(output_dir):
@@ -96,15 +98,19 @@ def save_results(error_history, labeled_indices, is_error, params, output_dir, X
     filename_base = f"{params['dataset']}_{params['model']}_{params['strategy']}_{params['track']}_seed{params['seed']}"
 
     results_path = os.path.join(output_dir, f"{filename_base}_results.json")
-    with open(results_path, 'w') as f:
-        json.dump({
-            'error_history': error_history,
-            'params': params,
-            'labeled_indices': labeled_indices,
-            'is_error': is_error,
-            'final_error_count': error_history[-1] if error_history else 0,
-            'final_error_rate': error_history[-1] / len(error_history) if error_history else 0
-        }, f, indent=2)
+    with open(results_path, "w") as f:
+        json.dump(
+            {
+                "error_history": error_history,
+                "params": params,
+                "labeled_indices": labeled_indices,
+                "is_error": is_error,
+                "final_error_count": error_history[-1] if error_history else 0,
+                "final_error_rate": error_history[-1] / len(error_history) if error_history else 0,
+            },
+            f,
+            indent=2,
+        )
 
     # Create error curve plot
     plt.figure(figsize=(10, 6))
@@ -116,13 +122,15 @@ def save_results(error_history, labeled_indices, is_error, params, output_dir, X
 
     # Add final error count annotation
     if error_history:
-        plt.annotate(f'Final: {error_history[-1]} errors',
-                    xy=(len(error_history)-1, error_history[-1]),
-                    xytext=(len(error_history)*0.7, error_history[-1]*1.1),
-                    arrowprops=dict(arrowstyle='->', color='red', alpha=0.7))
+        plt.annotate(
+            f"Final: {error_history[-1]} errors",
+            xy=(len(error_history) - 1, error_history[-1]),
+            xytext=(len(error_history) * 0.7, error_history[-1] * 1.1),
+            arrowprops=dict(arrowstyle="->", color="red", alpha=0.7),
+        )
 
     plot_path = os.path.join(output_dir, f"{filename_base}_plot.png")
-    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.savefig(plot_path, dpi=300, bbox_inches="tight")
     plt.close()
 
     print(f"Results saved to {results_path}")
