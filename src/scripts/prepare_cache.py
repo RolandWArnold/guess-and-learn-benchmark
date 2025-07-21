@@ -4,13 +4,13 @@ prepare_cache.py  ·  G&L replication toolkit
 --------------------------------------------------
 Downloads **all** datasets and pretrained model weights once so that
 subsequent runs can execute fully offline (or behind a restrictive
-fire‑wall / CI container with no network access).
+fire-wall / CI container with no network access).
 
-It honours the environment variable  HF_CACHE_DIR  – if you set it to a
-project‑local folder the entire Hugging‑Face cache will live there.
-Otherwise we fall back to the user‑level default  ~/.cache/huggingface.
+It honours the environment variable  HF_CACHE_DIR - if you set it to a
+project-local folder the entire Hugging-Face cache will live there.
+Otherwise we fall back to the user-level default ~/.cache/huggingface.
 
-Vision datasets land in  <data_dir>/  (default ./data).  TorchVision
+Vision datasets land in <data_dir>/ (default ./data). TorchVision
 silently skips a download when the archive files already exist.
 """
 
@@ -37,7 +37,7 @@ TV_MODEL_CALLS = [
     lambda: torchvision.models.resnet50(weights="IMAGENET1K_V1"),
 ]
 
-TRANSFORM = T.ToTensor()  # simple to‑tensor for dataset download
+TRANSFORM = T.ToTensor()  # simple to-tensor for dataset download
 
 # ---------------------------------------------------------------------
 # Functions
@@ -74,7 +74,7 @@ def prime_hf_dataset(cache: Path):
 
 
 def prime_transformer(name: str, cache: Path):
-    """Download a Hugging‑Face model & tokenizer."""
+    """Download a Hugging-Face model & tokenizer."""
     print(f"↳ Downloading {name} weights …")
     model = AutoModel.from_pretrained(name, cache_dir=str(cache))
 
@@ -94,7 +94,7 @@ def prime_transformer(name: str, cache: Path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_dir", type=str, default="./data", help="Vision dataset root dir (default ./data)")
-    parser.add_argument("--hf_cache", type=str, default=os.getenv("HF_CACHE_DIR", "~/.cache/huggingface"), help="Hugging‑Face cache dir (env HF_CACHE_DIR overrides)")
+    parser.add_argument("--hf_cache", type=str, default=os.getenv("HF_CACHE_DIR", "~/.cache/huggingface"), help="Hugging-Face cache dir (env HF_CACHE_DIR overrides)")
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir).expanduser()
@@ -108,7 +108,7 @@ def main():
         print(f"• {ds}")
         prime_torchvision_dataset(ds, data_dir)
 
-    print("\n=== Priming Hugging‑Face dataset ===")
+    print("\n=== Priming Hugging-Face dataset ===")
     prime_hf_dataset(cache_dir)
 
     print("\n=== Priming Transformer checkpoints ===")

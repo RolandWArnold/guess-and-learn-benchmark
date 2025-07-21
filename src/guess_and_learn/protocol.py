@@ -133,6 +133,7 @@ def _to_jsonable(obj):
 
 
 def save_results(
+    duration: float,
     error_history,
     labeled_indices,
     is_error,
@@ -167,7 +168,7 @@ def save_results(
     with open(results_path, "w") as f:
         json.dump(
             _to_jsonable(
-                {  #  <<< wrap dictionary here
+                {
                     "error_history": error_history,
                     "params": params,
                     "labeled_indices": labeled_indices,
@@ -179,6 +180,7 @@ def save_results(
                         "numpy_random": np.random.get_state(),
                         "torch_random": torch.random.get_rng_state(),  # tensor; converter handles it
                     },
+                    "duration": duration,
                 }
             ),
             f,
@@ -212,10 +214,10 @@ def save_results(
     if X_pool is None or Y_pool is None:
         return  # nothing further to save
 
-    label_path = os.path.join(output_dir, f"{params['dataset']}_labels.pt")
+    label_path = os.path.join(output_dir, f"{fname_base}_labels.pt")
     torch.save(Y_pool, label_path) if not os.path.exists(label_path) else None
 
-    feature_path = os.path.join(output_dir, f"{params['dataset']}_features.pt")
+    feature_path = os.path.join(output_dir, f"{fname_base}_features.pt")
     if os.path.exists(feature_path):
         return  # features already dumped
 

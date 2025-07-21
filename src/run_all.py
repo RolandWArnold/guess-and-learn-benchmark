@@ -12,6 +12,7 @@ export RESULTS_S3_PREFIX=s3://my-bucket/gnl-runs   # enable remote cache
 from __future__ import annotations
 import os, sys, re, random, argparse, itertools, multiprocessing as mp
 from pathlib import Path
+import time
 
 import numpy as np
 import torch, datasets  # 3rd-party
@@ -20,7 +21,7 @@ from guess_and_learn.datasets import get_data_for_protocol
 from guess_and_learn.models import get_model
 from guess_and_learn.strategies import get_strategy
 from guess_and_learn.protocol import GnlProtocol, save_results
-from guess_and_learn.io_utils import s3_enabled, exists as s3_exists, download as s3_download
+from guess_and_learn.io_utils import s3_enabled, s3_exists, s3_download, s3_upload
 
 datasets.config.DOWNLOAD_MODE = datasets.DownloadMode.REUSE_CACHE_IF_EXISTS
 
@@ -34,6 +35,7 @@ def _exp_id(seed: int, dataset: str, model: str, strategy: str, track: str) -> s
 
 def run_single_experiment(exp_tuple):
     (seed, dataset, model_name, strategy_name, track, K, device, reset_weights, subset_cap, output_dir) = exp_tuple
+    start = time.time()
 
     exp_tag = _exp_id(seed, dataset, model_name, strategy_name, track)
     results_p = Path(output_dir) / f"{exp_tag}_results.json"
@@ -60,9 +62,9 @@ def run_single_experiment(exp_tuple):
     X_full, Y_full = get_data_for_protocol(dataset)
 
     # 2. instantiate model & strategy before any sub-sampling
-    model = get_model(model_name, dataset, device, track_config={"track": track, "K": K})
+    model = get_model(model_name, dataset, device, track_config={"track": track, "K": K, "seed": seed})
     strategy = get_strategy(strategy_name)
-    track_cfg = {"track": track, "K": K, "reset_weights": reset_weights}
+    track_cfg = {"track": track, "K": K, "reset_weights": reset_weights, "seed": seed}
     if model_name == "cnn":
         track_cfg.update(lr=0.01, epochs_per_update=5, train_batch_size=32)
 
@@ -79,8 +81,16 @@ def run_single_experiment(exp_tuple):
     error_hist, lab_ix, is_err = proto.run()
 
     params = dict(seed=seed, dataset=dataset, model=model_name, strategy=strategy_name, track=track)
+    duration = time.time() - start
 
-    save_results(error_hist, lab_ix, is_err, params, output_dir, model, X, Y)
+    # persist locally
+    save_results(duration, error_hist, lab_ix, is_err, params, output_dir, model, X_pool=X, Y_pool=Y)
+
+    # mirror to S3 (if enabled)
+    if s3_enabled():
+        for ext in ("_results.json", "_plot.png", "_features.pt", "_labels.pt"):
+            p = Path(output_dir) / f"{exp_tag}{ext}"
+            s3_upload(p, quiet=True)
 
 
 # ────────────────────────────────────────────────────────────────────
