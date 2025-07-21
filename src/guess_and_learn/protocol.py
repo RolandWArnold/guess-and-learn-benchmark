@@ -112,6 +112,23 @@ class GnlProtocol:
         return self.error_history, self.labeled_indices, self.is_error
 
 
+def _to_jsonable(obj):
+    """Recursively cast NumPy / Torch types to vanilla Python types."""
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, (torch.Tensor,)):
+        return obj.tolist()
+    if isinstance(obj, (list, tuple)):
+        return [_to_jsonable(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _to_jsonable(v) for k, v in obj.items()}
+    return obj
+
+
 def save_results(
     error_history,
     labeled_indices,
@@ -146,15 +163,21 @@ def save_results(
     results_path = os.path.join(output_dir, f"{fname_base}_results.json")
     with open(results_path, "w") as f:
         json.dump(
-            {
-                "error_history": error_history,
-                "params": params,
-                "labeled_indices": labeled_indices,
-                "is_error": is_error,
-                "final_error_count": error_history[-1] if error_history else 0,
-                "final_error_rate": error_history[-1] / len(error_history) if error_history else 0,
-                "rng_state": {"python_random": random.getstate(), "numpy_random": np.random.get_state(), "torch_random": torch.random.get_rng_state().tolist()},
-            },
+            _to_jsonable(
+                {  #  <<< wrap dictionary here
+                    "error_history": error_history,
+                    "params": params,
+                    "labeled_indices": labeled_indices,
+                    "is_error": is_error,
+                    "final_error_count": error_history[-1] if error_history else 0,
+                    "final_error_rate": error_history[-1] / len(error_history) if error_history else 0,
+                    "rng_state": {
+                        "python_random": random.getstate(),
+                        "numpy_random": np.random.get_state(),
+                        "torch_random": torch.random.get_rng_state(),  # tensor; converter handles it
+                    },
+                }
+            ),
             f,
             indent=2,
         )

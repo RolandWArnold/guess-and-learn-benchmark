@@ -1,3 +1,4 @@
+import contextlib
 from .datasets import get_data_for_protocol
 import torchvision.transforms as T
 import torch
@@ -445,7 +446,10 @@ class PretrainedModelWrapper(GnlModel):
         if hasattr(self, "classifier"):
             self.classifier.eval()
 
-        with torch.no_grad():
+        cast = self.device.type in ("cuda", "mps")
+        with torch.no_grad(), (
+            torch.autocast(device_type=self.device.type) if cast else contextlib.nullcontext()
+        ):
             if self.tokenizer:  # Text (BERT)
                 texts = X if isinstance(X, list) else [str(i) for i in X]
                 inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
@@ -470,17 +474,19 @@ class PretrainedModelWrapper(GnlModel):
             data = [X_labeled[-1]] if self.tokenizer else X_labeled[-1:].to(self.device)
             target = Y_labeled[-1:].to(self.device)
             self.optimizer.zero_grad()
-            # Forward pass
-            if self.tokenizer:
-                inputs = self.tokenizer(data, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
-                logits = self.model(**inputs).logits
-            elif "vit" in self.model_name:
-                pv = self._prep_vision(data)
-                logits = self.classifier(self.model(pixel_values=pv).last_hidden_state[:, 0])
-            else:  # ResNet
-                logits = self.model(self._prep_vision(data))
-            # Backward pass
-            loss = self.loss_fn(logits, target)
+            cast = self.device.type in ("cuda", "mps")
+            with (torch.autocast(device_type=self.device.type) if cast else contextlib.nullcontext()):
+                # Forward pass
+                if self.tokenizer:
+                    inputs = self.tokenizer(data, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
+                    logits = self.model(**inputs).logits
+                elif "vit" in self.model_name:
+                    pv = self._prep_vision(data)
+                    logits = self.classifier(self.model(pixel_values=pv).last_hidden_state[:, 0])
+                else:  # ResNet
+                    logits = self.model(self._prep_vision(data))
+                # Backward pass
+                loss = self.loss_fn(logits, target)
             loss.backward()
             self.optimizer.step()
         else:
@@ -494,22 +500,25 @@ class PretrainedModelWrapper(GnlModel):
 
             for _ in range(epochs):
                 for (idx_batch,) in loader:
-                    if self.tokenizer:  # Text
-                        data = [X_labeled[i] for i in idx_batch]
+                    if self.tokenizer:
+                        data   = [X_labeled[i] for i in idx_batch]
                         target = Y_labeled[idx_batch].to(self.device)
-                        inputs = self.tokenizer(data, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
-                        logits = self.model(**inputs).logits
-                    else:  # Image
-                        data = X_labeled[idx_batch].to(self.device)
+                    else:
+                        data   = X_labeled[idx_batch].to(self.device)
                         target = Y_labeled[idx_batch].to(self.device)
-                        if "vit" in self.model_name:
-                            pv = self._prep_vision(data)
-                            logits = self.classifier(self.model(pixel_values=pv).last_hidden_state[:, 0])
-                        else:  # ResNet
-                            logits = self.model(self._prep_vision(data))
 
                     self.optimizer.zero_grad()
-                    loss = self.loss_fn(logits, target)
+                    cast = self.device.type in ("cuda", "mps")
+                    with (torch.autocast(device_type=self.device.type) if cast else contextlib.nullcontext()):
+                        if self.tokenizer:
+                            inputs = self.tokenizer(data, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
+                            logits = self.model(**inputs).logits
+                        elif "vit" in self.model_name:
+                            pv     = self._prep_vision(data)
+                            logits = self.classifier(self.model(pixel_values=pv).last_hidden_state[:, 0])
+                        else:
+                            logits = self.model(self._prep_vision(data))
+                        loss = self.loss_fn(logits, target)
                     loss.backward()
                     self.optimizer.step()
 

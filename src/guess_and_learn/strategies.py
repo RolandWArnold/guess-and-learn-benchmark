@@ -41,6 +41,10 @@ class LeastConfidenceStrategy(AcquisitionStrategy):
                 X_batch = X_pool[unlabeled_indices]
 
             outputs = model.predict_proba(X_batch)
+
+            if outputs.shape[1] == 0:  # pathological, but be safe
+                return np.random.choice(unlabeled_indices)
+
             confidence, _ = torch.max(outputs, dim=1)
             worst_idx = torch.argmin(confidence).item()
             return unlabeled_indices[worst_idx]
@@ -58,6 +62,11 @@ class MarginStrategy(AcquisitionStrategy):
                 X_batch = X_pool[unlabeled_indices]
 
             outputs = model.predict_proba(X_batch)
+
+            # fallback when model knows <2 classes
+            if outputs.shape[1] < 2:
+                return np.random.choice(unlabeled_indices)
+
             sorted_probs, _ = torch.sort(outputs, dim=1, descending=True)
             margins = sorted_probs[:, 0] - sorted_probs[:, 1]
             best_idx = torch.argmin(margins).item()
