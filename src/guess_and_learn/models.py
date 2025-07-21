@@ -9,6 +9,7 @@ import numpy as np
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoModel
 import torchvision
 from torch.utils.data import TensorDataset
+import copy
 
 
 # --- Base Model Wrapper ------------------------------------------------------
@@ -30,6 +31,9 @@ class GnlModel:
         if isinstance(X, list):
             raise NotImplementedError("Sub-class must implement text feature extraction.")
         return X.reshape(X.shape[0], -1).to(self.device)
+
+    def reset(self):
+        raise NotImplementedError("This model does not support --reset-weights.")
 
 
 # --- k-NN Model --------------------------------------------------------------
@@ -56,15 +60,15 @@ class KnnModel(GnlModel):
             if self.num_classes is None:
                 raise ValueError("num_classes not set for cold-start prediction.")
             return torch.randint(0, self.num_classes, (X.shape[0],), dtype=torch.long, device=self.device)
-        return torch.tensor(self.model.predict(self._flat(X)), dtype=torch.long)
+        return torch.tensor(self.model.predict(self._flat(X)), dtype=torch.long, device=self.device)
 
     def predict_proba(self, X):
         if not self.is_fitted:
             if self.num_classes is None:
                 raise ValueError("num_classes not set for cold-start proba.")
-            return torch.ones(X.shape[0], self.num_classes) / self.num_classes
+            return (torch.ones(X.shape[0], self.num_classes, dtype=torch.float32, device=self.device) / self.num_classes)
         proba = self.model.predict_proba(self._flat(X))
-        return torch.tensor(proba, dtype=torch.float32)
+        return torch.tensor(proba, dtype=torch.float32, device=self.device)
 
     def update(self, X_labeled, Y_labeled, track_config):
         # ── guard: k cannot exceed available samples ────────────────────────────
@@ -78,6 +82,10 @@ class KnnModel(GnlModel):
             self.num_classes = len(np.unique(Y_np))
         self.model.fit(X_flat, Y_np)
         self.is_fitted = True
+
+    def reset(self):
+        self.model = KNeighborsClassifier(n_neighbors=self.n_neighbors)
+        self.is_fitted = False
 
 
 # --- True Multi-class Perceptron --------------------------------------------
@@ -122,8 +130,16 @@ class PerceptronModel(GnlModel):
             y = Y_labeled[i].item()
             self._perceptron_step(x, y)
 
+    def reset(self):
+        nn.init.xavier_uniform_(self.model.weight)
+        nn.init.zeros_(self.model.bias)
 
-# --- Simple CNN Model (unchanged) -------------------------------------------
+        opt_cls      = self.optimizer.__class__
+        opt_defaults = self.optimizer.defaults.copy()
+        opt_defaults.pop("params", None)
+        self.optimizer = opt_cls(self.model.parameters(), **opt_defaults)
+
+# --- Simple CNN Model -------------------------------------------
 class SimpleCnn(nn.Module):
     def __init__(self, in_channels=3, num_classes=10, input_size=32):
         super(SimpleCnn, self).__init__()
@@ -155,6 +171,13 @@ class SimpleCnn(nn.Module):
         x = self.features(x)
         return self.classifier(x)
 
+    def reinit(self):
+        def _w(m):
+            if isinstance(m, (nn.Conv2d, nn.Linear)):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+        self.apply(_w)
 
 class CnnModel(GnlModel):
     # (identical except feature extractor override)
@@ -190,13 +213,23 @@ class CnnModel(GnlModel):
         with torch.no_grad():
             return self.model.features(X.to(self.device)).flatten(1)
 
+    def reset(self):
+        """Re-initialise weights *and* rebuild the optimiser in a model-agnostic way."""
+        # 1) Random-restart the network weights
+        self.model.reinit()
+
+        # 2) Recreate the optimiser with the same class & hyper-parameters
+        opt_cls      = self.optimizer.__class__          # e.g. torch.optim.SGD / AdamW
+        opt_defaults = self.optimizer.defaults.copy()    # lr, momentum, betas, etc.
+
+        # ‘params’ is injected by torch into each param_group – remove if present
+        opt_defaults.pop("params", None)
+
+        self.optimizer = opt_cls(self.model.parameters(), **opt_defaults)
 
 # ---------------------------------------------------------------------#
 #  TEXT-SPECIFIC MODELS (AG News)                                      #
 # ---------------------------------------------------------------------#
-
-from sklearn.feature_extraction.text import TfidfVectorizer  # pylint: disable=wrong-import-order
-
 
 class TextPerceptronModel(GnlModel):
     """Perceptron using a PRE-FITTED TF-IDF vectoriser."""
@@ -204,7 +237,7 @@ class TextPerceptronModel(GnlModel):
     # FIX: Init now accepts a pre-fitted vectorizer and input_dim
     def __init__(self, input_dim, num_classes, vectorizer, lr=0.1, device="cpu"):
         super().__init__(device)
-        self.vec = vectorizer # Use the passed, pre-fitted vectorizer
+        self.vec = vectorizer  # Use the passed, pre-fitted vectorizer
         self.lr = lr
         self.num_classes = num_classes
         self.lin = nn.Linear(input_dim, num_classes, bias=True).to(device)
@@ -253,8 +286,11 @@ class TextPerceptronModel(GnlModel):
 
     def extract_features(self, X):
         X_tfidf = self.vec.transform(X).toarray()
-        return torch.tensor(X_tfidf, dtype=torch.float32)
+        return torch.tensor(X_tfidf, dtype=torch.float32, device=self.device)
 
+    def reset(self):
+        nn.init.xavier_uniform_(self.lin.weight)
+        nn.init.zeros_(self.lin.bias)
 
 class TextKnnModel(KnnModel):
     """k-NN over PRE-FITTED TF-IDF features for raw-string datasets."""
@@ -262,7 +298,7 @@ class TextKnnModel(KnnModel):
     # FIX: Init now accepts a pre-fitted vectorizer
     def __init__(self, n_neighbors, num_classes, vectorizer, **kwargs):
         super().__init__(n_neighbors=n_neighbors, num_classes=num_classes, **kwargs)
-        self.vec = vectorizer # Use the passed, pre-fitted vectorizer
+        self.vec = vectorizer  # Use the passed, pre-fitted vectorizer
 
     def _flat(self, X):
         if isinstance(X, list):
@@ -275,17 +311,17 @@ class TextKnnModel(KnnModel):
         if not self.is_fitted:
             if self.num_classes is None:
                 raise ValueError("num_classes not set for cold-start prediction.")
-            return torch.randint(0, self.num_classes, (n,), dtype=torch.long)
-        return torch.tensor(self.model.predict(self._flat(X)), dtype=torch.long)
+            return torch.randint(0, self.num_classes, (n,), dtype=torch.long, device=self.device)
+        return torch.tensor(self.model.predict(self._flat(X)), dtype=torch.long, device=self.device)
 
     def predict_proba(self, X):
         n = len(X) if isinstance(X, list) else X.shape[0]
         if not self.is_fitted:
             if self.num_classes is None:
                 raise ValueError("num_classes not set for cold-start proba.")
-            return torch.ones(n, self.num_classes) / self.num_classes
+            return (torch.ones(n, self.num_classes, dtype=torch.float32, device=self.device) / self.num_classes)
         proba = self.model.predict_proba(self._flat(X))
-        return torch.tensor(proba, dtype=torch.float32)
+        return torch.tensor(proba, dtype=torch.float32, device=self.device)
 
     def update(self, X_labeled, Y_labeled, track_config):
         """
@@ -300,7 +336,7 @@ class TextKnnModel(KnnModel):
         FIX: Consistently uses the pre-fitted vectorizer to transform data.
         """
         X_tfidf = self.vec.transform(X).toarray()
-        return torch.tensor(X_tfidf, dtype=torch.float32)
+        return torch.tensor(X_tfidf, dtype=torch.float32, device=self.device)
 
 
 # --- Pretrained Model Wrapper -----------------------------------------------
@@ -311,38 +347,67 @@ class PretrainedModelWrapper(GnlModel):
         self.tokenizer = None
         self.num_classes = num_classes
         self.track_config = track_config
-        self.feature_extractor = None # For robust feature extraction
+        self.feature_extractor = None  # For robust feature extraction
 
-        # Model loading
+        # ---------------------------------------------------------------
+        # 1. Load model / tokenizer / classifier
+        # ---------------------------------------------------------------
         if "bert" in model_name:
-            self.model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=num_classes).to(device)
+            self.model = AutoModelForSequenceClassification.from_pretrained(
+                model_name, num_labels=num_classes
+            ).to(device)
             self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            # Store the backbone for feature extraction
-            self.feature_extractor = getattr(self.model, "bert", getattr(self.model, "roberta", None))
+            self.feature_extractor = getattr(
+                self.model, "bert", getattr(self.model, "roberta", None)
+            )
+
         elif "resnet" in model_name:
             self.model = torchvision.models.resnet50(weights="IMAGENET1K_V1")
             self.model.fc = nn.Linear(self.model.fc.in_features, num_classes)
             self.model = self.model.to(device)
-            # FIX: Create a robust feature extractor, avoiding a manual forward pass later.
             self.feature_extractor = nn.Sequential(*list(self.model.children())[:-1])
+
         elif "vit" in model_name:
             self.model = AutoModel.from_pretrained(model_name).to(device)
             self.classifier = nn.Linear(self.model.config.hidden_size, num_classes).to(device)
+
         else:
             raise ValueError(f"Model name {model_name} not supported")
 
+        # ---------------------------------------------------------------
+        # 2. Take a deep snapshot *before* any fine-tuning so we can
+        #    restore it in reset()
+        # ---------------------------------------------------------------
+        self._initial_state = {
+            "model": copy.deepcopy(self.model.state_dict()),
+            "classifier": copy.deepcopy(
+                getattr(self, "classifier", nn.Identity()).state_dict()
+            ),
+        }
+
+        # ---------------------------------------------------------------
+        # 3. Configure trainability & optimiser
+        # ---------------------------------------------------------------
         self._configure_for_track()
 
-        # Vision pre-processing
+        # ---------------------------------------------------------------
+        # 4. Vision preprocessing pipeline
+        # ---------------------------------------------------------------
         self._vision_tx = T.Compose(
             [
                 T.Resize(224),
-                T.Lambda(lambda img: img.repeat(3, 1, 1) if img.shape[0] == 1 else img),
-                T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),  # ImageNet μ/σ
+                T.Lambda(
+                    lambda img: img.repeat(3, 1, 1) if img.shape[0] == 1 else img
+                ),
+                T.Normalize(
+                    (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
+                ),  # ImageNet μ/σ
             ]
         )
 
+
     def _prep_vision(self, x_batch: torch.Tensor) -> torch.Tensor:
+        x_batch = x_batch.clamp(0.0, 1.0)
         if x_batch.shape[-1] != 224:
             x_batch = torch.stack([self._vision_tx(img) for img in x_batch])
         return x_batch.to(self.device)
@@ -391,16 +456,14 @@ class PretrainedModelWrapper(GnlModel):
             self.classifier.eval()
 
         with torch.no_grad():
-            if self.tokenizer: # Text (BERT)
+            if self.tokenizer:  # Text (BERT)
                 texts = X if isinstance(X, list) else [str(i) for i in X]
-                inputs = self.tokenizer(
-                    texts, return_tensors="pt", padding=True, truncation=True, max_length=512
-                ).to(self.device)
+                inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
                 logits = self.model(**inputs).logits
-            elif "vit" in self.model_name: # Vision Transformer
+            elif "vit" in self.model_name:  # Vision Transformer
                 outputs = self.model(pixel_values=self._prep_vision(X))
                 logits = self.classifier(outputs.last_hidden_state[:, 0])
-            else: # ResNet-50
+            else:  # ResNet-50
                 logits = self.model(self._prep_vision(X))
         return torch.softmax(logits, dim=1)
 
@@ -424,7 +487,7 @@ class PretrainedModelWrapper(GnlModel):
             elif "vit" in self.model_name:
                 pv = self._prep_vision(data)
                 logits = self.classifier(self.model(pixel_values=pv).last_hidden_state[:, 0])
-            else: # ResNet
+            else:  # ResNet
                 logits = self.model(self._prep_vision(data))
             # Backward pass
             loss = self.loss_fn(logits, target)
@@ -436,23 +499,23 @@ class PretrainedModelWrapper(GnlModel):
             batch_size = track_config.get("train_batch_size", 16)
 
             # Use DataLoader for both text and image batching
-            dataset = TensorDataset(torch.arange(len(X_labeled))) # Use indices for text
+            dataset = TensorDataset(torch.arange(len(X_labeled)))  # Use indices for text
             loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
             for _ in range(epochs):
                 for (idx_batch,) in loader:
-                    if self.tokenizer: # Text
+                    if self.tokenizer:  # Text
                         data = [X_labeled[i] for i in idx_batch]
                         target = Y_labeled[idx_batch].to(self.device)
                         inputs = self.tokenizer(data, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
                         logits = self.model(**inputs).logits
-                    else: # Image
+                    else:  # Image
                         data = X_labeled[idx_batch].to(self.device)
                         target = Y_labeled[idx_batch].to(self.device)
                         if "vit" in self.model_name:
                             pv = self._prep_vision(data)
                             logits = self.classifier(self.model(pixel_values=pv).last_hidden_state[:, 0])
-                        else: # ResNet
+                        else:  # ResNet
                             logits = self.model(self._prep_vision(data))
 
                     self.optimizer.zero_grad()
@@ -462,20 +525,28 @@ class PretrainedModelWrapper(GnlModel):
 
     def extract_features(self, X):
         with torch.no_grad():
-            if self.tokenizer: # BERT CLS embedding
+            if self.tokenizer:  # BERT CLS embedding
                 texts = X if isinstance(X, list) else [str(i) for i in X]
                 inp = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
                 # Use the pre-defined feature_extractor (the bert backbone)
                 hidden = self.feature_extractor(**inp).last_hidden_state[:, 0]
                 return hidden
-            elif "vit" in self.model_name: # ViT
+            elif "vit" in self.model_name:  # ViT
                 return self.model(pixel_values=self._prep_vision(X)).last_hidden_state[:, 0]
-            else: # ResNet-50
+            else:  # ResNet-50
                 # FIX: Use the robust feature_extractor created in __init__
                 x = self._prep_vision(X)
                 feats = self.feature_extractor(x)
                 return torch.flatten(feats, 1)
 
+    def reset(self):
+        # 1. Restore weights
+        self.model.load_state_dict(self._initial_state["model"])
+        if hasattr(self, "classifier"):
+            self.classifier.load_state_dict(self._initial_state["classifier"])
+
+        # 2. Re-configure trainability & create a fresh optimiser
+        self._configure_for_track()
 
 # --- Factory -----------------------------------------------------------------
 def get_model(name, dataset_name, device, track_config=None):
@@ -484,7 +555,7 @@ def get_model(name, dataset_name, device, track_config=None):
 
     if torch.is_tensor(X):
         input_shape = X.shape[1:]
-    else: # Text data
+    else:  # Text data
         input_shape = None
 
     # --- Classical Models --------------------------------------------------

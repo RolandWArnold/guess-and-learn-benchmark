@@ -13,9 +13,6 @@ def get_dataset(name: str, data_dir: str = "./data"):
       • No dataset-specific normalisation.
       • Vision images are left in raw [0,1] space; resizing happens later.
     """
-    import torchvision
-    import torchvision.transforms as transforms
-    from datasets import load_dataset
 
     # Common “to-tensor” transform
     to_tensor = transforms.ToTensor()

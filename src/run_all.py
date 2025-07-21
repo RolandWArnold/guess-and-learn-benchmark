@@ -20,7 +20,7 @@ def run_single_experiment(args):
     model = get_model(model_name, dataset, device)
     strategy = get_strategy(strategy_name)
 
-    track_config = {"track": track, "K": K}
+    track_config = {"track": track, "K": K, "reset_weights": args.reset_weights}
     if "pretrained" in model_name:
         track_config.update({"lr": 2e-5, "epochs_per_update": 3, "train_batch_size": 16})
     elif model_name == "cnn":
@@ -37,6 +37,7 @@ def main():
     parser.add_argument("--all", action="store_true", help="Run all combinations")
     parser.add_argument("--seeds", type=int, nargs="+", default=list(range(10)))
     parser.add_argument("--devices", type=str, default="cpu")
+    parser.add_argument("--reset-weights", action="store_true", help="Re-initialise model weights at every batch update")
     args = parser.parse_args()
 
     device = torch.device(args.devices)

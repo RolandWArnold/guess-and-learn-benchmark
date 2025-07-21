@@ -1,5 +1,9 @@
 import argparse
 import torch
+
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark     = False
+
 import numpy as np
 import random
 import sys
@@ -19,6 +23,7 @@ def main(args):
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     random.seed(args.seed)
+
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 

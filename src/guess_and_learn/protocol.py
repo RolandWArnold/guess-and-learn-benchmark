@@ -90,6 +90,12 @@ class GnlProtocol:
                     should_update = True
 
             if should_update:
+                if track_str.startswith(("G&L-SB", "G&L-PB")) and self.track_config.get("reset_weights", False):
+                    # Re-initialise before consuming the new batch
+                    try:
+                        self.model.reset()
+                    except NotImplementedError:
+                        pass  # silently skip models that can’t reset
                 # Get labeled data for update
                 if isinstance(self.X_pool, list):
                     # Handle text data
@@ -125,6 +131,13 @@ def save_results(
     • If a model does not implement extract_features() for list inputs,
       feature dumping is skipped gracefully.
     """
+    # ------------- deterministic RNG ---------------------------------
+    if "seed" in params and params["seed"] is not None:
+        seed = params["seed"]
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+
     # ------------- directory & filename handling ----------------------
     os.makedirs(output_dir, exist_ok=True)
     fname_base = f"{params['dataset']}_{params['model']}_{params['strategy']}_" f"{params['track']}_seed{params['seed']}"
@@ -140,6 +153,11 @@ def save_results(
                 "is_error": is_error,
                 "final_error_count": error_history[-1] if error_history else 0,
                 "final_error_rate": error_history[-1] / len(error_history) if error_history else 0,
+                "rng_state": {
+                    "python_random": random.getstate(),
+                    "numpy_random": np.random.get_state(),
+                    "torch_random": torch.random.get_rng_state().tolist()
+                }
             },
             f,
             indent=2,
