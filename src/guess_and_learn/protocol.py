@@ -106,13 +106,31 @@ class GnlProtocol:
         return self.error_history, self.labeled_indices, self.is_error
 
 
-def save_results(error_history, labeled_indices, is_error, params, output_dir, model=None, X_pool=None, Y_pool=None):
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+def save_results(
+    error_history,
+    labeled_indices,
+    is_error,
+    params,
+    output_dir,
+    model=None,
+    X_pool=None,
+    Y_pool=None,
+    batch_size: int = 512,  # NEW: configurable batch size
+):
+    """
+    Persist results, plot, and (optionally) dataset-wide features / labels.
 
-    filename_base = f"{params['dataset']}_{params['model']}_{params['strategy']}_{params['track']}_seed{params['seed']}"
+    • Text models now export TF-IDF features via the new extract_features().
+    • Vision feature extraction is batched to avoid GPU / RAM over-flow.
+    • If a model does not implement extract_features() for list inputs,
+      feature dumping is skipped gracefully.
+    """
+    # ------------- directory & filename handling ----------------------
+    os.makedirs(output_dir, exist_ok=True)
+    fname_base = f"{params['dataset']}_{params['model']}_{params['strategy']}_" f"{params['track']}_seed{params['seed']}"
 
-    results_path = os.path.join(output_dir, f"{filename_base}_results.json")
+    # ---------------- JSON metrics dump -------------------------------
+    results_path = os.path.join(output_dir, f"{fname_base}_results.json")
     with open(results_path, "w") as f:
         json.dump(
             {
@@ -127,7 +145,7 @@ def save_results(error_history, labeled_indices, is_error, params, output_dir, m
             indent=2,
         )
 
-    # Create error curve plot
+    # ---------------- error-curve plot --------------------------------
     plt.figure(figsize=(10, 6))
     plt.plot(error_history, linewidth=2)
     plt.title(f"G&L Error Curve: {params['model']} on {params['dataset']} ({params['strategy']})")
@@ -135,7 +153,6 @@ def save_results(error_history, labeled_indices, is_error, params, output_dir, m
     plt.ylabel("Cumulative Errors")
     plt.grid(True, alpha=0.3)
 
-    # Add final error count annotation
     if error_history:
         plt.annotate(
             f"Final: {error_history[-1]} errors",
@@ -144,34 +161,49 @@ def save_results(error_history, labeled_indices, is_error, params, output_dir, m
             arrowprops=dict(arrowstyle="->", color="red", alpha=0.7),
         )
 
-    plot_path = os.path.join(output_dir, f"{filename_base}_plot.png")
+    plot_path = os.path.join(output_dir, f"{fname_base}_plot.png")
     plt.savefig(plot_path, dpi=300, bbox_inches="tight")
     plt.close()
 
     print(f"Results saved to {results_path}")
     print(f"Plot saved to {plot_path}")
-    print(f"Final error count: {error_history[-1] if error_history else 0}")
-    print(f"Final error rate: {error_history[-1]/len(error_history) if error_history else 0:.3f}")
 
-    # Save dataset features and labels if provided
-    if X_pool is not None and Y_pool is not None:
-        label_path = os.path.join(output_dir, f"{params['dataset']}_labels.pt")
-        feature_path = os.path.join(output_dir, f"{params['dataset']}_features.pt")
+    # ---------------- feature / label dump ----------------------------
+    if X_pool is None or Y_pool is None:
+        return  # nothing further to save
 
-        if not os.path.exists(label_path):
-            torch.save(Y_pool, label_path)
-            print(f"Saved labels to {label_path}")
+    label_path = os.path.join(output_dir, f"{params['dataset']}_labels.pt")
+    torch.save(Y_pool, label_path) if not os.path.exists(label_path) else None
 
-        if not os.path.exists(feature_path):
-            if model is not None:
-                with torch.no_grad():
-                    feats = model.extract_features(X_pool)
-                torch.save(feats.cpu() if torch.is_tensor(feats) else feats, feature_path)
-                print(f"Saved features to {feature_path}")
-            elif not isinstance(X_pool, list):  # vision fallback only
-                X_flat = X_pool.reshape(X_pool.shape[0], -1) if torch.is_tensor(X_pool) else X_pool
-                torch.save(X_flat, feature_path)
-                print(f"Saved features to {feature_path}")
+    feature_path = os.path.join(output_dir, f"{params['dataset']}_features.pt")
+    if os.path.exists(feature_path):
+        return  # features already dumped
+
+    # ---------- Case 1: model has a proper extractor ------------------
+    if model is not None and hasattr(model, "extract_features"):
+        try:
+            if isinstance(X_pool, list):
+                feats = model.extract_features(X_pool)
             else:
-                # raw text + no model → skip feature dump cleanly
-                pass
+                # batch to avoid OOM for vision tensors
+                batches = []
+                for i in range(0, len(X_pool), batch_size):
+                    xb = X_pool[i : i + batch_size]
+                    with torch.no_grad():
+                        fb = model.extract_features(xb).cpu()
+                    batches.append(fb)
+                feats = torch.cat(batches, dim=0)
+            torch.save(feats, feature_path)
+            print(f"Saved features to {feature_path}")
+            return
+        except NotImplementedError:
+            # fall through to raw dump
+            pass
+
+    # ---------- Case 2: raw fallback (vision tensors only) ------------
+    if not isinstance(X_pool, list) and torch.is_tensor(X_pool):
+        raw = X_pool.reshape(X_pool.shape[0], -1).cpu()
+        torch.save(raw, feature_path)
+        print(f"Saved raw flattened features to {feature_path}")
+    else:
+        print("Feature dump skipped (no extractor for text model).")

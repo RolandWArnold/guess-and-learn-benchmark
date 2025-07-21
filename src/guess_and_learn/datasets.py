@@ -7,43 +7,53 @@ from torch.utils.data import TensorDataset
 
 def get_dataset(name: str, data_dir: str = "./data"):
     """
-    Loads and preprocesses the specified dataset.
-    Returns train and test torch.utils.data.Dataset objects.
+    Loads the requested dataset and returns (train_set, test_set).
+
+    New spec (July 2025):
+      • No dataset-specific normalisation.
+      • Vision images are left in raw [0,1] space; resizing happens later.
     """
+    import torchvision
+    import torchvision.transforms as transforms
+    from datasets import load_dataset
+
+    # Common “to-tensor” transform
+    to_tensor = transforms.ToTensor()
+
     if name.lower() == "mnist":
-        # Add normalization as specified in paper (mean 0.1307, std 0.3081)
-        transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-        train_set = torchvision.datasets.MNIST(root=data_dir, train=True, download=True, transform=transform)
-        test_set = torchvision.datasets.MNIST(root=data_dir, train=False, download=True, transform=transform)
+        transform = transforms.Compose([to_tensor])  # 1×28×28
+        train_set = torchvision.datasets.MNIST(data_dir, train=True, download=True, transform=transform)
+        test_set = torchvision.datasets.MNIST(data_dir, train=False, download=True, transform=transform)
         return train_set, test_set
 
     elif name.lower() == "fashion-mnist":
-        # Paper groups Fashion-MNIST with MNIST → same mean/std
-        transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-        train_set = torchvision.datasets.FashionMNIST(root=data_dir, train=True, download=True, transform=transform)
-        test_set = torchvision.datasets.FashionMNIST(root=data_dir, train=False, download=True, transform=transform)
+        transform = transforms.Compose([to_tensor])
+        train_set = torchvision.datasets.FashionMNIST(data_dir, train=True, download=True, transform=transform)
+        test_set = torchvision.datasets.FashionMNIST(data_dir, train=False, download=True, transform=transform)
         return train_set, test_set
 
     elif name.lower() == "cifar10":
-        # Add normalization as specified in paper
-        transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize(mean=(0.4914, 0.4822, 0.4465), std=(0.2023, 0.1994, 0.2010))])
-        train_set = torchvision.datasets.CIFAR10(root=data_dir, train=True, download=True, transform=transform)
-        test_set = torchvision.datasets.CIFAR10(root=data_dir, train=False, download=True, transform=transform)
+        transform = transforms.Compose([to_tensor])  # 3×32×32
+        train_set = torchvision.datasets.CIFAR10(data_dir, train=True, download=True, transform=transform)
+        test_set = torchvision.datasets.CIFAR10(data_dir, train=False, download=True, transform=transform)
         return train_set, test_set
 
     elif name.lower() == "svhn":
-        # Add grayscale conversion and normalization as specified in paper
-        transform = transforms.Compose([transforms.Grayscale(num_output_channels=1), transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])  # Using standard 0.5/0.5 for grayscale
-        train_set = torchvision.datasets.SVHN(root=data_dir, split="train", download=True, transform=transform)
-        test_set = torchvision.datasets.SVHN(root=data_dir, split="test", download=True, transform=transform)
+        # grayscale conversion remains (paper robustness test)
+        transform = transforms.Compose(
+            [
+                transforms.Grayscale(num_output_channels=1),
+                to_tensor,
+            ]
+        )
+        train_set = torchvision.datasets.SVHN(data_dir, split="train", download=True, transform=transform)
+        test_set = torchvision.datasets.SVHN(data_dir, split="test", download=True, transform=transform)
         return train_set, test_set
 
     elif name.lower() == "ag_news":
         # This is a special case. We'll use Hugging Face datasets and return TensorDatasets
         # Note: For G&L, we typically use the test set as the pool to label
-        dataset = load_dataset("ag_news")
-
-        # For simplicity, we'll use the test set as the pool for G&L
+        dataset = load_dataset("ag_news")  # For simplicity, we'll use the test set as the pool for G&L
         # In a real scenario, you'd tokenize and embed this. Here we just return it.
         # The model wrapper will need to handle tokenization.
         return dataset["train"], dataset["test"]
