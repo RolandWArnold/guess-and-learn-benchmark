@@ -366,6 +366,7 @@ class PretrainedModelWrapper(GnlModel):
         self.num_classes = num_classes
         self.track_config = track_config
         self.feature_extractor = None  # For robust feature extraction
+        self.vision_normalizer = T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
 
         # ---------------------------------------------------------------
         # 1. Load model / tokenizer / classifier
@@ -402,22 +403,25 @@ class PretrainedModelWrapper(GnlModel):
         # ---------------------------------------------------------------
         self._configure_for_track()
 
-        # ---------------------------------------------------------------
-        # 4. Vision preprocessing pipeline
-        # ---------------------------------------------------------------
-        self._vision_tx = T.Compose(
-            [
-                T.Resize(224),
-                T.Lambda(lambda img: img.repeat(3, 1, 1) if img.shape[0] == 1 else img),
-                T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),  # ImageNet μ/σ
-            ]
-        )
-
     def _prep_vision(self, x_batch: torch.Tensor) -> torch.Tensor:
+        # Move to GPU once at the beginning
+        x_batch = x_batch.to(self.device)
+
+        # Ensure data is in [0, 1] range before processing
         x_batch = x_batch.clamp(0.0, 1.0)
+
+        # Use the functional API for batched transforms
         if x_batch.shape[-1] != 224:
-            x_batch = torch.stack([self._vision_tx(img) for img in x_batch])
-        return x_batch.to(self.device)
+            x_batch = T.functional.resize(x_batch, size=[224, 224], antialias=True)
+
+        # Vectorized way to repeat grayscale channels to RGB
+        if x_batch.shape[1] == 1:
+            x_batch = x_batch.expand(-1, 3, -1, -1)
+
+        # Apply normalization to the entire batch
+        x_batch = self.vision_normalizer(x_batch)
+
+        return x_batch
 
     def _configure_for_track(self):
         is_po_track = self.track_config["track"].startswith("G&L-PO")
@@ -485,7 +489,13 @@ class PretrainedModelWrapper(GnlModel):
 
         if is_online_track:
             # Online update: only the newest sample
-            data = [X_labeled[-1]] if self.tokenizer else X_labeled[-1:].to(self.device)
+            # Correctly handle online updates for text vs. vision models
+            if self.tokenizer:
+                # For text, X_labeled is a list of strings. Get the last string.
+                data = [str(X_labeled[-1])]
+            else:
+                # For vision, X_labeled is a tensor. Get the last tensor slice.
+                data = X_labeled[-1:].to(self.device)
             target = Y_labeled[-1:].to(self.device)
             self.optimizer.zero_grad()
             cast = self.device.type in ("cuda", "mps")
@@ -574,7 +584,7 @@ def get_model(name, dataset_name, device, track_config=None):
         input_shape = None
 
     # --- Classical Models --------------------------------------------------
-    if name == "knn":
+    if name in ["knn", "text-knn"]:
         if dataset_name.lower() == "ag_news":
             # FIX: Pre-fit the vectorizer on the entire unlabeled pool
             print("Fitting TF-IDF vectorizer for k-NN on AG News...")
@@ -583,7 +593,7 @@ def get_model(name, dataset_name, device, track_config=None):
             return TextKnnModel(n_neighbors=7, num_classes=num_classes, vectorizer=vectorizer)
         return KnnModel(n_neighbors=7, num_classes=num_classes)
 
-    elif name == "perceptron":
+    elif name in ["perceptron", "text-perceptron"]:
         lr = track_config.get("lr", 0.1) if track_config else 0.1
         if dataset_name.lower() == "ag_news":
             # FIX: Pre-fit the vectorizer on the entire unlabeled pool

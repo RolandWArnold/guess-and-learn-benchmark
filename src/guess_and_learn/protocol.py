@@ -198,56 +198,54 @@ def save_results(
 
     feature_path = os.path.join(output_dir, f"{fname_base}_features.pt")
     if os.path.exists(feature_path):
-        return  # features already dumped
-
-    # ---------- Case 1: model has a proper extractor ------------------
-    if model is not None and hasattr(model, "extract_features"):
-        try:
-            if isinstance(X_pool, list):
-                feats = model.extract_features(X_pool)
-            else:
-                # batch to avoid OOM for vision tensors
-                batches = []
-                for i in range(0, len(X_pool), batch_size):
-                    xb = X_pool[i : i + batch_size]
-                    with torch.no_grad():
-                        fb = model.extract_features(xb).cpu()
-                    batches.append(fb)
-                feats = torch.cat(batches, dim=0)
-            torch.save(feats, feature_path)
-            print(f"Saved features to {feature_path}")
-            return
-        except NotImplementedError:
-            # fall through to raw dump
-            pass
-
-    # ---------- Case 2: raw fallback (vision tensors only) ------------
-    if not isinstance(X_pool, list) and torch.is_tensor(X_pool):
-        raw = X_pool.reshape(X_pool.shape[0], -1).cpu()
-        torch.save(raw, feature_path)
-        print(f"Saved raw flattened features to {feature_path}")
+        print(f"Features already exist at {feature_path}, skipping extraction.")
     else:
-        print("Feature dump skipped (no extractor for text model).")
+        # ---------- Case 1: model has a proper extractor ------------------
+        if model is not None and hasattr(model, "extract_features"):
+            try:
+                if isinstance(X_pool, list):
+                    feats = model.extract_features(X_pool)
+                else:
+                    batches = []
+                    for i in range(0, len(X_pool), batch_size):
+                        xb = X_pool[i : i + batch_size]
+                        with torch.no_grad():
+                            fb = model.extract_features(xb).cpu()
+                        batches.append(fb)
+                    feats = torch.cat(batches, dim=0)
+                torch.save(feats, feature_path)
+                print(f"Saved features to {feature_path}")
+            except NotImplementedError:
+                # fall through to raw dump
+                pass
 
-    # ---------------- error-curve plot --------------------------------
-    plt.figure(figsize=(10, 6))
-    plt.plot(error_history, linewidth=2)
-    plt.title(f"G&L Error Curve: {params['model']} on {params['dataset']} ({params['strategy']})")
-    plt.xlabel("Number of Labeled Samples")
-    plt.ylabel("Cumulative Errors")
-    plt.grid(True, alpha=0.3)
+        # ---------- Case 2: raw fallback (vision tensors only) ------------
+        if not isinstance(X_pool, list) and torch.is_tensor(X_pool):
+            raw = X_pool.reshape(X_pool.shape[0], -1).cpu()
+            torch.save(raw, feature_path)
+            print(f"Saved raw flattened features to {feature_path}")
+        else:
+            print("Feature dump skipped (no extractor for text model).")
 
-    if error_history:
-        plt.annotate(
-            f"Final: {error_history[-1]} errors",
-            xy=(len(error_history) - 1, error_history[-1]),
-            xytext=(len(error_history) * 0.7, error_history[-1] * 1.1),
-            arrowprops=dict(arrowstyle="->", color="red", alpha=0.7),
-        )
+        # ---------------- error-curve plot --------------------------------
+        plt.figure(figsize=(10, 6))
+        plt.plot(error_history, linewidth=2)
+        plt.title(f"G&L Error Curve: {params['model']} on {params['dataset']} ({params['strategy']})")
+        plt.xlabel("Number of Labeled Samples")
+        plt.ylabel("Cumulative Errors")
+        plt.grid(True, alpha=0.3)
 
-    plot_path = os.path.join(output_dir, f"{fname_base}_plot.png")
-    plt.savefig(plot_path, dpi=300, bbox_inches="tight")
-    plt.close()
+        if error_history:
+            plt.annotate(
+                f"Final: {error_history[-1]} errors",
+                xy=(len(error_history) - 1, error_history[-1]),
+                xytext=(len(error_history) * 0.7, error_history[-1] * 1.1),
+                arrowprops=dict(arrowstyle="->", color="red", alpha=0.7),
+            )
 
-    print(f"Results saved to {results_path}")
-    print(f"Plot saved to {plot_path}")
+        plot_path = os.path.join(output_dir, f"{fname_base}_plot.png")
+        plt.savefig(plot_path, dpi=300, bbox_inches="tight")
+        plt.close()
+
+        print(f"Results saved to {results_path}")
+        print(f"Plot saved to {plot_path}")
