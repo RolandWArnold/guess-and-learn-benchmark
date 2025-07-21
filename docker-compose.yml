@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  gnl:
+    build: .
+    image: guess-and-learn:latest      # → reused on subsequent runs
+    # -----------------------------------------------------------------
+    #   Pass flags straight to run_all.py
+    #   (override from CLI →  `docker compose run gnl --help` )
+    # -----------------------------------------------------------------
+    command: ["--all",
+              "--workers", "${WORKERS:-8}",
+              "--devices", "cuda"]     # will fall back to CPU if none
+    environment:
+      # --- offline / cache ------------------------------------------
+      HF_HOME: /root/.cache/huggingface
+      TRANSFORMERS_OFFLINE: "1"
+      HF_DATASETS_OFFLINE: "1"
+      # --- S3 caching -----------------------------------------------
+      # - export these in your shell or .env
+      AWS_ACCESS_KEY_ID:     "${AWS_ACCESS_KEY_ID}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}"
+      AWS_DEFAULT_REGION:    "${AWS_DEFAULT_REGION:-us-east-1}"
+      RESULTS_S3_PREFIX:     "${RESULTS_S3_PREFIX:-}"   # leave blank ⇒ local only
+    volumes:
+      # host cache → container (read-only = safer)
+      - ~/.cache/huggingface:/root/.cache/huggingface:ro
+      # results on host for quick viewing
+      - ./results:/workspace/results
+    deploy:                    # enables `--gpus all` automatically under Swarm
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: ["gpu"]
+    tty: true                  # keeps logs readable when attached
