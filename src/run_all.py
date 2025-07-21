@@ -1,8 +1,17 @@
 #!/usr/bin/env python
 
+import multiprocessing as mp
+
+if __name__ == "__main__":
+    try:
+        mp.set_start_method("fork")
+    except RuntimeError:
+        # Context already set, which is fine
+        pass
+
 import argparse
 import itertools
-import multiprocessing as mp
+import multiprocessing as mp, datasets
 import os
 import random
 import re
@@ -11,10 +20,13 @@ import sys
 import numpy as np
 import torch
 
+
 from guess_and_learn.datasets import get_data_for_protocol
 from guess_and_learn.models import get_model
 from guess_and_learn.strategies import get_strategy
 from guess_and_learn.protocol import GnlProtocol, save_results
+
+datasets.config.DOWNLOAD_MODE = datasets.DownloadMode.REUSE_CACHE_IF_EXISTS
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -22,6 +34,8 @@ from guess_and_learn.protocol import GnlProtocol, save_results
 # ────────────────────────────────────────────────────────────────────
 def run_single_experiment(exp):
     (seed, dataset, model_name, strategy_name, track, K, device, reset_weights, subset_cap, output_dir) = exp
+    print(f"[{os.getpid()}] {dataset} {model_name} {strategy_name} {track} seed={seed} …")
+    # sys.stdout.flush()
 
     # deterministic RNG — reproducible per run
     random.seed(seed)
@@ -144,7 +158,7 @@ def main():
     print(f"Launching {len(grid)} experiments → {args.output_dir}")
 
     with mp.Pool(processes=args.workers) as pool:
-        pool.map(run_single_experiment, grid)
+        pool.map(run_single_experiment, grid, chunksize=1)
 
 
 if __name__ == "__main__":

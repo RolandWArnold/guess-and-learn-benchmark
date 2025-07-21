@@ -1,16 +1,32 @@
-import contextlib
-from .datasets import get_data_for_protocol
-import torchvision.transforms as T
+from __future__ import annotations
+
+import contextlib, os, copy
+import operator
+from pathlib import Path
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torchvision
+import torchvision.transforms as T
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.neighbors import KNeighborsClassifier
-import numpy as np
-from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoModel
-import torchvision
 from torch.utils.data import TensorDataset
-import copy
+from transformers import (
+    AutoModel,
+    AutoModelForSequenceClassification,
+    AutoTokenizer,
+)
+
+from .datasets import get_data_for_protocol
+
+
+# --------------------------------------------------------------------- #
+#  Global cache directory (shared with prepare_cache.py)                #
+# --------------------------------------------------------------------- #
+HF_CACHE = Path(os.getenv("HF_CACHE_DIR", os.path.expanduser("~/.cache/huggingface")))
+HF_CACHE.mkdir(parents=True, exist_ok=True)
 
 
 # --- Base Model Wrapper ------------------------------------------------------
@@ -355,8 +371,8 @@ class PretrainedModelWrapper(GnlModel):
         # 1. Load model / tokenizer / classifier
         # ---------------------------------------------------------------
         if "bert" in model_name:
-            self.model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=num_classes).to(device)
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=num_classes, cache_dir=HF_CACHE).to(device)
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=HF_CACHE)
             self.feature_extractor = getattr(self.model, "bert", getattr(self.model, "roberta", None))
 
         elif "resnet" in model_name:
@@ -366,7 +382,7 @@ class PretrainedModelWrapper(GnlModel):
             self.feature_extractor = nn.Sequential(*list(self.model.children())[:-1])
 
         elif "vit" in model_name:
-            self.model = AutoModel.from_pretrained(model_name).to(device)
+            self.model = AutoModel.from_pretrained(model_name, cache_dir=HF_CACHE).to(device)
             self.classifier = nn.Linear(self.model.config.hidden_size, num_classes).to(device)
 
         else:
@@ -447,9 +463,7 @@ class PretrainedModelWrapper(GnlModel):
             self.classifier.eval()
 
         cast = self.device.type in ("cuda", "mps")
-        with torch.no_grad(), (
-            torch.autocast(device_type=self.device.type) if cast else contextlib.nullcontext()
-        ):
+        with torch.no_grad(), torch.autocast(device_type=self.device.type) if cast else contextlib.nullcontext():
             if self.tokenizer:  # Text (BERT)
                 texts = X if isinstance(X, list) else [str(i) for i in X]
                 inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
@@ -475,7 +489,7 @@ class PretrainedModelWrapper(GnlModel):
             target = Y_labeled[-1:].to(self.device)
             self.optimizer.zero_grad()
             cast = self.device.type in ("cuda", "mps")
-            with (torch.autocast(device_type=self.device.type) if cast else contextlib.nullcontext()):
+            with torch.autocast(device_type=self.device.type) if cast else contextlib.nullcontext():
                 # Forward pass
                 if self.tokenizer:
                     inputs = self.tokenizer(data, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
@@ -495,26 +509,27 @@ class PretrainedModelWrapper(GnlModel):
             batch_size = track_config.get("train_batch_size", 16)
 
             # Use DataLoader for both text and image batching
-            dataset = TensorDataset(torch.arange(len(X_labeled)))  # Use indices for text
-            loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
+            idx_dataset = TensorDataset(torch.arange(len(X_labeled)))
+            loader = torch.utils.data.DataLoader(idx_dataset, batch_size=batch_size, shuffle=True)
             for _ in range(epochs):
                 for (idx_batch,) in loader:
                     if self.tokenizer:
-                        data   = [X_labeled[i] for i in idx_batch]
+                        # robust (even when |batch|==1)
+                        data_slice = operator.itemgetter(*idx_batch.tolist())(X_labeled)
+                        data = list(data_slice) if isinstance(data_slice, tuple) else [data_slice]
                         target = Y_labeled[idx_batch].to(self.device)
                     else:
-                        data   = X_labeled[idx_batch].to(self.device)
+                        data = X_labeled[idx_batch].to(self.device)
                         target = Y_labeled[idx_batch].to(self.device)
 
                     self.optimizer.zero_grad()
                     cast = self.device.type in ("cuda", "mps")
-                    with (torch.autocast(device_type=self.device.type) if cast else contextlib.nullcontext()):
+                    with torch.autocast(device_type=self.device.type) if cast else contextlib.nullcontext():
                         if self.tokenizer:
                             inputs = self.tokenizer(data, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
                             logits = self.model(**inputs).logits
                         elif "vit" in self.model_name:
-                            pv     = self._prep_vision(data)
+                            pv = self._prep_vision(data)
                             logits = self.classifier(self.model(pixel_values=pv).last_hidden_state[:, 0])
                         else:
                             logits = self.model(self._prep_vision(data))
