@@ -1,0 +1,88 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtualenv
+venv/
+ENV/
+env/
+.venv/
+
+# pipenv virtualenv and lock files
+Pipfile.lock
+pipenv-*.tar.gz
+
+# pyenv
+.python-version
+
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# Testing
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# Logs and debug
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+
+# Data & Outputs
+data/
+outputs/
+results/
+*.csv
+*.jsonl
+*.pkl
+*.h5
+*.npz
+
+# MacOS
+.DS_Store
+
+# Cursor specific
+.cursor/
