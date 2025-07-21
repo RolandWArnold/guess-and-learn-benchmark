@@ -23,6 +23,8 @@ from guess_and_learn.strategies import get_strategy
 from guess_and_learn.protocol import GnlProtocol, save_results
 from guess_and_learn.io_utils import s3_enabled, s3_exists, s3_download, s3_upload
 
+from PIL import Image, UnidentifiedImageError
+
 datasets.config.DOWNLOAD_MODE = datasets.DownloadMode.REUSE_CACHE_IF_EXISTS
 
 torch.backends.cudnn.enabled = True
@@ -49,13 +51,43 @@ def run_single_experiment(exp_tuple):
     # --------------------------------------------------------------- #
     # 0.  Skip / restore if artefact exists                           #
     # --------------------------------------------------------------- #
-    if results_p.exists():
-        print(f"[SKIP-local] {exp_tag}")
-        return
-    if s3_enabled() and s3_exists(results_p):
-        print(f"[SKIP-s3]   {exp_tag}  (downloading JSON)")
-        s3_download(results_p)  # makes later plotting easy
-        return
+
+    # ─── Treat the plot as the final artifact ──────────────────────────
+    plot_path = Path(output_dir) / f"{exp_tag}_plot.png"
+
+    # helper to delete any stray files
+    def _cleanup():
+        for ext in ("_results.json", "_plot.png", "_labels.pt", "_features.pt"):
+            p = Path(output_dir) / f"{exp_tag}{ext}"
+            if p.exists():
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+
+    # 0a.  If we have a valid, fully‐written plot, assume everything else is done
+    if plot_path.exists():
+        try:
+            with Image.open(plot_path) as img:
+                img.verify()  # throws if truncated or invalid
+            print(f"[SKIP]    {exp_tag} (plot OK)")
+            return
+        except (IOError, UnidentifiedImageError):
+            print(f"[WARN]    {exp_tag} plot corrupted—cleaning up and re-running")
+            _cleanup()
+
+    # 0b.  Otherwise, if using S3, try the same there
+    if s3_enabled() and s3_exists(plot_path):
+        # download, then verify
+        s3_download(plot_path)
+        try:
+            with Image.open(plot_path) as img:
+                img.verify()
+            print(f"[SKIP-s3] {exp_tag} (plot OK in S3)")
+            return
+        except (IOError, UnidentifiedImageError):
+            print(f"[WARN]    {exp_tag} plot corrupted in S3—cleaning up and re-running")
+            _cleanup()
 
     print(f"[{os.getpid()}] {dataset} {model_name} {strategy_name} {track} seed={seed} …")
 

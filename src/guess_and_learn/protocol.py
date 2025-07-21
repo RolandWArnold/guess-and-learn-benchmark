@@ -163,10 +163,7 @@ def save_results(
     # ------------- directory & filename handling ----------------------
     os.makedirs(output_dir, exist_ok=True)
     subset_str = f"_s{params['subset']}" if params.get("subset") else ""
-    fname_base = (
-        f"{params['dataset']}_{params['model']}_{params['strategy']}_"
-        f"{params['track']}_seed{params['seed']}{subset_str}"
-    )
+    fname_base = f"{params['dataset']}_{params['model']}_{params['strategy']}_" f"{params['track']}_seed{params['seed']}{subset_str}"
 
     # ---------------- JSON metrics dump -------------------------------
     results_path = os.path.join(output_dir, f"{fname_base}_results.json")
@@ -191,29 +188,6 @@ def save_results(
             f,
             indent=2,
         )
-
-    # ---------------- error-curve plot --------------------------------
-    plt.figure(figsize=(10, 6))
-    plt.plot(error_history, linewidth=2)
-    plt.title(f"G&L Error Curve: {params['model']} on {params['dataset']} ({params['strategy']})")
-    plt.xlabel("Number of Labeled Samples")
-    plt.ylabel("Cumulative Errors")
-    plt.grid(True, alpha=0.3)
-
-    if error_history:
-        plt.annotate(
-            f"Final: {error_history[-1]} errors",
-            xy=(len(error_history) - 1, error_history[-1]),
-            xytext=(len(error_history) * 0.7, error_history[-1] * 1.1),
-            arrowprops=dict(arrowstyle="->", color="red", alpha=0.7),
-        )
-
-    plot_path = os.path.join(output_dir, f"{fname_base}_plot.png")
-    plt.savefig(plot_path, dpi=300, bbox_inches="tight")
-    plt.close()
-
-    print(f"Results saved to {results_path}")
-    print(f"Plot saved to {plot_path}")
 
     # ---------------- feature / label dump ----------------------------
     if X_pool is None or Y_pool is None:
@@ -254,3 +228,26 @@ def save_results(
         print(f"Saved raw flattened features to {feature_path}")
     else:
         print("Feature dump skipped (no extractor for text model).")
+
+    # ---------------- error-curve plot --------------------------------
+    plt.figure(figsize=(10, 6))
+    plt.plot(error_history, linewidth=2)
+    plt.title(f"G&L Error Curve: {params['model']} on {params['dataset']} ({params['strategy']})")
+    plt.xlabel("Number of Labeled Samples")
+    plt.ylabel("Cumulative Errors")
+    plt.grid(True, alpha=0.3)
+
+    if error_history:
+        plt.annotate(
+            f"Final: {error_history[-1]} errors",
+            xy=(len(error_history) - 1, error_history[-1]),
+            xytext=(len(error_history) * 0.7, error_history[-1] * 1.1),
+            arrowprops=dict(arrowstyle="->", color="red", alpha=0.7),
+        )
+
+    plot_path = os.path.join(output_dir, f"{fname_base}_plot.png")
+    plt.savefig(plot_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+    print(f"Results saved to {results_path}")
+    print(f"Plot saved to {plot_path}")

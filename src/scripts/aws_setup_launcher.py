@@ -24,23 +24,27 @@ ARCH = "linux/amd64"
 DEFAULT_INSTANCE_TYPE = "g4dn.xlarge"
 AMI_ID = "ami-05eb56e0befdb025f"  # Ubuntu 22.04 Deep Learning Base (EBS)
 
+
 # === Utilities ===
 def run(cmd, check=True):
     print(f"> {cmd}")
     subprocess.run(cmd, shell=True, check=check)
 
+
 def get_my_ip():
     return f"{requests.get('https://checkip.amazonaws.com').text.strip()}/32"
+
 
 def resolve_ecr_uri():
     sts = boto3.client("sts")
     account_id = sts.get_caller_identity()["Account"]
     return f"{account_id}.dkr.ecr.{REGION}.amazonaws.com/{REPO_NAME}"
 
+
 def image_digest(image_tag):
-    result = subprocess.run(f"docker inspect --format='{{{{index .RepoDigests 0}}}}' {image_tag}",
-                            shell=True, capture_output=True, text=True)
+    result = subprocess.run(f"docker inspect --format='{{{{index .RepoDigests 0}}}}' {image_tag}", shell=True, capture_output=True, text=True)
     return result.stdout.strip() if result.returncode == 0 else None
+
 
 def ecr_image_digest(repo_name, tag):
     ecr = boto3.client("ecr", region_name=REGION)
@@ -49,6 +53,7 @@ def ecr_image_digest(repo_name, tag):
         return images["imageDetails"][0]["imageDigest"]
     except Exception:
         return None
+
 
 # === IAM Setup ===
 def setup_iam():
@@ -59,14 +64,7 @@ def setup_iam():
         print(f"[✓] Role already exists: {ROLE_NAME}")
     except iam.exceptions.NoSuchEntityException:
         print(f"[+] Creating role: {ROLE_NAME}")
-        assume_role_policy = {
-            "Version": "2012-10-17",
-            "Statement": [{
-                "Effect": "Allow",
-                "Principal": {"Service": "ec2.amazonaws.com"},
-                "Action": "sts:AssumeRole"
-            }]
-        }
+        assume_role_policy = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": {"Service": "ec2.amazonaws.com"}, "Action": "sts:AssumeRole"}]}
         iam.create_role(RoleName=ROLE_NAME, AssumeRolePolicyDocument=json.dumps(assume_role_policy))
 
     print(f"[+] Ensuring policy attached: {POLICY_ARN}")
@@ -80,7 +78,7 @@ def setup_iam():
         iam.create_instance_profile(InstanceProfileName=PROFILE_NAME)
 
     profile = iam.get_instance_profile(InstanceProfileName=PROFILE_NAME)
-    roles = [r['RoleName'] for r in profile['InstanceProfile']['Roles']]
+    roles = [r["RoleName"] for r in profile["InstanceProfile"]["Roles"]]
     if ROLE_NAME not in roles:
         print(f"[+] Attaching role to instance profile")
         iam.add_role_to_instance_profile(InstanceProfileName=PROFILE_NAME, RoleName=ROLE_NAME)
@@ -90,6 +88,7 @@ def setup_iam():
     print("[+] Waiting for IAM propagation...")
     time.sleep(10)
 
+
 # === Key & Network Setup ===
 def setup_ec2_network():
     ec2 = boto3.client("ec2", region_name=REGION)
@@ -98,30 +97,27 @@ def setup_ec2_network():
     if not KEY_PATH.exists():
         key_pair = ec2.create_key_pair(KeyName=KEY_NAME)
         KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        KEY_PATH.write_text(key_pair['KeyMaterial'])
+        KEY_PATH.write_text(key_pair["KeyMaterial"])
         KEY_PATH.chmod(stat.S_IRUSR)
         print(f"[+] Created key at {KEY_PATH}")
     else:
         print(f"[✓] Key file exists at {KEY_PATH}")
 
     try:
-        groups = ec2.describe_security_groups(GroupNames=[GROUP_NAME])['SecurityGroups']
-        group_id = groups[0]['GroupId']
+        groups = ec2.describe_security_groups(GroupNames=[GROUP_NAME])["SecurityGroups"]
+        group_id = groups[0]["GroupId"]
         print(f"[✓] Security group '{GROUP_NAME}' already exists")
     except botocore.exceptions.ClientError:
         print(f"[+] Creating security group '{GROUP_NAME}'")
-        vpc_id = ec2.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}])['Vpcs'][0]['VpcId']
-        group_id = ec2.create_security_group(GroupName=GROUP_NAME, Description="Allow SSH", VpcId=vpc_id)['GroupId']
-        ec2.authorize_security_group_ingress(GroupId=group_id, IpPermissions=[{
-            'IpProtocol': 'tcp', 'FromPort': 22, 'ToPort': 22,
-            'IpRanges': [{'CidrIp': ip_cidr}]
-        }])
+        vpc_id = ec2.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}])["Vpcs"][0]["VpcId"]
+        group_id = ec2.create_security_group(GroupName=GROUP_NAME, Description="Allow SSH", VpcId=vpc_id)["GroupId"]
+        ec2.authorize_security_group_ingress(GroupId=group_id, IpPermissions=[{"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": ip_cidr}]}])
         print(f"[✓] Opened SSH access to {ip_cidr}")
 
-    subnet = sorted(ec2.describe_subnets(Filters=[{"Name": "default-for-az", "Values": ["true"]}])['Subnets'],
-                    key=lambda s: s['AvailabilityZone'])[0]['SubnetId']
+    subnet = sorted(ec2.describe_subnets(Filters=[{"Name": "default-for-az", "Values": ["true"]}])["Subnets"], key=lambda s: s["AvailabilityZone"])[0]["SubnetId"]
     print(f"[✓] Selected subnet {subnet}")
     return group_id, subnet
+
 
 # === Docker Build and Push ===
 def push_to_ecr():
@@ -152,9 +148,10 @@ def push_to_ecr():
     else:
         print("[✓] Image already up-to-date in ECR — skipping build and push")
 
+
 # === EC2 Launch and Print Instructions ===
 def get_user_data(account_id, ecr_uri):
-    return f'''#!/bin/bash
+    return f"""#!/bin/bash
 set -e
 exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 
@@ -175,13 +172,14 @@ docker run --gpus all -e TRANSFORMERS_OFFLINE=1 -e HF_DATASETS_OFFLINE=1 \
   -v /workspace/results:/workspace/results \
   {ecr_uri}:{IMAGE_TAG} --all --workers 8 --devices cuda
 
-shutdown -h now'''
+shutdown -h now"""
+
 
 def launch_instance(instance_type):
     ec2 = boto3.client("ec2", region_name=REGION)
     group_id, subnet_id = setup_ec2_network()
     ecr_uri = resolve_ecr_uri()
-    account_id = ecr_uri.split('.')[0]
+    account_id = ecr_uri.split(".")[0]
     user_data = get_user_data(account_id, ecr_uri)
 
     instance = ec2.run_instances(
@@ -191,13 +189,10 @@ def launch_instance(instance_type):
         SecurityGroupIds=[group_id],
         SubnetId=subnet_id,
         IamInstanceProfile={"Name": PROFILE_NAME},
-        TagSpecifications=[{
-            'ResourceType': 'instance',
-            'Tags': [{'Key': 'Name', 'Value': 'gnl-launch-instance'}]
-        }],
+        TagSpecifications=[{"ResourceType": "instance", "Tags": [{"Key": "Name", "Value": "gnl-launch-instance"}]}],
         UserData=user_data,
         MinCount=1,
-        MaxCount=1
+        MaxCount=1,
     )["Instances"][0]
 
     instance_id = instance["InstanceId"]
@@ -207,16 +202,18 @@ def launch_instance(instance_type):
     print(f"aws ec2 describe-instances --instance-ids {instance_id} --query 'Reservations[0].Instances[0].PublicIpAddress' --output text")
     print(f"ssh -i {KEY_PATH} ubuntu@<Public-IP>")
 
+
 def terminate_all():
     ec2 = boto3.client("ec2", region_name=REGION)
-    filters = [{'Name': 'tag:Name', 'Values': ['gnl-launch-instance']}]
+    filters = [{"Name": "tag:Name", "Values": ["gnl-launch-instance"]}]
     instances = ec2.describe_instances(Filters=filters)
-    ids = [i['InstanceId'] for r in instances['Reservations'] for i in r['Instances'] if i['State']['Name'] != 'terminated']
+    ids = [i["InstanceId"] for r in instances["Reservations"] for i in r["Instances"] if i["State"]["Name"] != "terminated"]
     if ids:
         print(f"[+] Terminating instances: {' '.join(ids)}")
         ec2.terminate_instances(InstanceIds=ids)
     else:
         print("[✓] No running 'gnl-launch-instance' instances to terminate")
+
 
 # === Entry ===
 def main():
@@ -247,6 +244,7 @@ def main():
         print("\n--- SSH Instructions ---\n")
         print("Use AWS Console or describe-instances to get public IP.")
         print(f"ssh -i {KEY_PATH} ubuntu@<Public-IP>")
+
 
 if __name__ == "__main__":
     main()
