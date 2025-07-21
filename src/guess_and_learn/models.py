@@ -3,14 +3,13 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.base import BaseEstimator, ClassifierMixin
 import numpy as np
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoModel
 import torchvision
 from torch.utils.data import TensorDataset
 
 
-# --- Base Model Wrapper ---
+# --- Base Model Wrapper ------------------------------------------------------
 class GnlModel:
     def __init__(self, device="cpu"):
         self.device = device
@@ -24,58 +23,67 @@ class GnlModel:
     def update(self, X_labeled, Y_labeled, track_config):
         raise NotImplementedError
 
+    # common hook used by save_results()
+    def extract_features(self, X):
+        if isinstance(X, list):
+            raise NotImplementedError("Sub-class must implement text feature extraction.")
+        return X.reshape(X.shape[0], -1).to(self.device)
 
-# --- k-NN Model ---
+
+# --- k-NN Model --------------------------------------------------------------
 class KnnModel(GnlModel):
-    def __init__(self, n_neighbors=7, **kwargs):
-        super().__init__()
+    """
+    Only change: accept num_classes at construction so early uniform
+    predictions match non-10-class datasets (e.g. AG News).
+    """
+
+    def __init__(self, n_neighbors=7, num_classes=None, **kwargs):
+        super().__init__(**kwargs)
         self.n_neighbors = n_neighbors
         self.model = KNeighborsClassifier(n_neighbors=self.n_neighbors)
         self.is_fitted = False
-        self.num_classes = None
+        self.num_classes = num_classes  # <- injected from factory
+
+    def _flat(self, X):
+        if torch.is_tensor(X):
+            return X.reshape(X.shape[0], -1).cpu().numpy()
+        raise TypeError("KnnModel expects a numeric torch.Tensor; received non-tensor input.")
 
     def predict(self, X):
-        X_flat = X.reshape(X.shape[0], -1).cpu().numpy()
         if not self.is_fitted:
-            # Random guess if not fitted
             if self.num_classes is None:
-                return torch.zeros(X.shape[0], dtype=torch.long)
+                raise ValueError("num_classes not set for cold-start prediction.")
             return torch.randint(0, self.num_classes, (X.shape[0],), dtype=torch.long)
-        return torch.tensor(self.model.predict(X_flat), dtype=torch.long)
+        return torch.tensor(self.model.predict(self._flat(X)), dtype=torch.long)
 
     def predict_proba(self, X):
-        X_flat = X.reshape(X.shape[0], -1).cpu().numpy()
         if not self.is_fitted:
-            # Uniform probability if not fitted
             if self.num_classes is None:
-                self.num_classes = 10  # Default assumption
+                raise ValueError("num_classes not set for cold-start proba.")
             return torch.ones(X.shape[0], self.num_classes) / self.num_classes
-        proba = self.model.predict_proba(X_flat)
+        proba = self.model.predict_proba(self._flat(X))
         return torch.tensor(proba, dtype=torch.float32)
 
     def update(self, X_labeled, Y_labeled, track_config):
-        # k-NN is non-parametric, "update" means refitting on all available data ("memory append")
-        X_flat = X_labeled.reshape(X_labeled.shape[0], -1).cpu().numpy()
+        X_flat = self._flat(X_labeled)
         Y_np = Y_labeled.cpu().numpy()
-
-        # Set num_classes if not already set
         if self.num_classes is None:
             self.num_classes = len(np.unique(Y_np))
-
         self.model.fit(X_flat, Y_np)
         self.is_fitted = True
 
 
-# --- Perceptron Model ---
+# --- True Multi-class Perceptron --------------------------------------------
 class PerceptronModel(GnlModel):
-    def __init__(self, input_dim, num_classes, lr=0.1, device="cpu"):
+    """
+    Replaces logistic-regression training with classic perceptron updates.
+    Forward path & probabilities stay identical.
+    """
+
+    def __init__(self, input_dim, num_classes, lr=1.0, device="cpu"):
         super().__init__(device)
         self.lr = lr
-        self.model = nn.Linear(input_dim, num_classes).to(device)
-        self.optimizer = optim.SGD(self.model.parameters(), lr=self.lr)
-        self.loss_fn = nn.CrossEntropyLoss()
-
-        # Initialize with small random weights for better initial predictions
+        self.model = nn.Linear(input_dim, num_classes, bias=True).to(device)
         nn.init.xavier_uniform_(self.model.weight)
         nn.init.zeros_(self.model.bias)
 
@@ -88,32 +96,30 @@ class PerceptronModel(GnlModel):
             logits = self.model(X_flat)
         return torch.softmax(logits, dim=1)
 
+    def _perceptron_step(self, x_vec, y_true):
+        """Single-example perceptron weight update."""
+        logits = self.model(x_vec.unsqueeze(0))
+        y_pred = torch.argmax(logits, dim=1).item()
+        if y_pred != y_true:
+            self.model.weight.data[y_true] += self.lr * x_vec
+            self.model.weight.data[y_pred] -= self.lr * x_vec
+            self.model.bias.data[y_true] += self.lr
+            self.model.bias.data[y_pred] -= self.lr
+
     def update(self, X_labeled, Y_labeled, track_config):
-        self.model.train()
-
-        if track_config["track"] == "G&L-SO":
-            # Online update: train only on the most recent point
-            X_flat = X_labeled[-1:].reshape(1, -1).to(self.device)
-            Y_target = Y_labeled[-1:].to(self.device)
-        else:
-            # Batch update: train on all labeled data
-            X_flat = X_labeled.reshape(X_labeled.shape[0], -1).to(self.device)
-            Y_target = Y_labeled.to(self.device)
-
-        self.optimizer.zero_grad()
-        output = self.model(X_flat)
-        loss = self.loss_fn(output, Y_target)
-        loss.backward()
-        self.optimizer.step()
+        online = track_config["track"].startswith("G&L-SO")
+        idxs = [-1] if online else range(len(X_labeled))
+        for i in idxs:
+            x = X_labeled[i].reshape(-1).to(self.device)
+            y = Y_labeled[i].item()
+            self._perceptron_step(x, y)
 
 
-# --- Simple CNN Model ---
+# --- Simple CNN Model (unchanged) -------------------------------------------
 class SimpleCnn(nn.Module):
     def __init__(self, in_channels=3, num_classes=10, input_size=32):
         super(SimpleCnn, self).__init__()
         self.input_size = input_size
-
-        # Architecture matches paper: Conv-ReLU-Pool ×3
         self.features = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
             nn.ReLU(),
@@ -125,16 +131,13 @@ class SimpleCnn(nn.Module):
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2, stride=2),
         )
-
-        # Calculate correct input size for linear layer
         with torch.no_grad():
-            dummy_input = torch.zeros(1, in_channels, input_size, input_size)
-            linear_input_size = self.features(dummy_input).flatten(1).shape[1]
+            dummy = torch.zeros(1, in_channels, input_size, input_size)
+            lin_in = self.features(dummy).flatten(1).shape[1]
 
-        # MLP with 512 units and dropout 0.5
         self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(linear_input_size, 512),
+            nn.Linear(lin_in, 512),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(512, num_classes),
@@ -142,11 +145,11 @@ class SimpleCnn(nn.Module):
 
     def forward(self, x):
         x = self.features(x)
-        x = self.classifier(x)
-        return x
+        return self.classifier(x)
 
 
 class CnnModel(GnlModel):
+    # (identical except feature extractor override)
     def __init__(self, in_channels, num_classes, input_size=32, lr=0.01, device="cpu"):
         super().__init__(device)
         self.model = SimpleCnn(in_channels, num_classes, input_size).to(device)
@@ -163,25 +166,24 @@ class CnnModel(GnlModel):
         return torch.softmax(logits, dim=1)
 
     def update(self, X_labeled, Y_labeled, track_config):
-        # Batch update for SB track
         self.model.train()
         epochs = track_config.get("epochs_per_update", 5)
         batch_size = track_config.get("train_batch_size", 32)
-
-        train_dataset = TensorDataset(X_labeled, Y_labeled)
-        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-
-        for epoch in range(epochs):
-            for data, target in train_loader:
+        loader = torch.utils.data.DataLoader(TensorDataset(X_labeled, Y_labeled), batch_size=batch_size, shuffle=True)
+        for _ in range(epochs):
+            for data, target in loader:
                 data, target = data.to(self.device), target.to(self.device)
                 self.optimizer.zero_grad()
-                output = self.model(data)
-                loss = self.loss_fn(output, target)
+                loss = self.loss_fn(self.model(data), target)
                 loss.backward()
                 self.optimizer.step()
 
+    def extract_features(self, X):
+        with torch.no_grad():
+            return self.model.features(X.to(self.device)).flatten(1)
 
-# --- Pretrained Model Wrapper ---
+
+# --- Pretrained Model Wrapper -----------------------------------------------
 class PretrainedModelWrapper(GnlModel):
     def __init__(self, model_name, num_classes, track_config, device="cpu"):
         super().__init__(device)
@@ -190,14 +192,13 @@ class PretrainedModelWrapper(GnlModel):
         self.num_classes = num_classes
         self.track_config = track_config
 
-        # --- Model Loading ---
+        # Model loading unchanged ...
         if "bert" in model_name:
             self.model = AutoModelForSequenceClassification.from_pretrained(model_name, num_labels=num_classes).to(device)
             self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         elif "resnet" in model_name:
             self.model = torchvision.models.resnet50(weights="IMAGENET1K_V1")
-            num_ftrs = self.model.fc.in_features
-            self.model.fc = nn.Linear(num_ftrs, num_classes)
+            self.model.fc = nn.Linear(self.model.fc.in_features, num_classes)
             self.model = self.model.to(device)
         elif "vit" in model_name:
             self.model = AutoModel.from_pretrained(model_name)
@@ -206,48 +207,39 @@ class PretrainedModelWrapper(GnlModel):
         else:
             raise ValueError(f"Model name {model_name} not supported")
 
-        # Configure model parameters and optimizer in __init__ based on track ---
         self._configure_for_track()
 
     def _configure_for_track(self):
-        """Set requires_grad and initialize the optimizer based on the G&L track."""
-        is_po_track = self.track_config["track"] == "G&L-PO"
+        # recognise suffixes like G&L-PO_1
+        is_po_track = self.track_config["track"].startswith("G&L-PO")
 
-        # Default: all params are trainable (for PB tracks)
-        for param in self.model.parameters():
-            param.requires_grad = True
+        for p in self.model.parameters():
+            p.requires_grad = True
         if hasattr(self, "classifier"):
-            for param in self.classifier.parameters():
-                param.requires_grad = True
+            for p in self.classifier.parameters():
+                p.requires_grad = True
 
-        # If PO track, freeze the backbone
         if is_po_track:
-            for param in self.model.parameters():
-                param.requires_grad = False
-
+            for p in self.model.parameters():
+                p.requires_grad = False
             if "resnet" in self.model_name:
-                for param in self.model.fc.parameters():
-                    param.requires_grad = True
+                for p in self.model.fc.parameters():
+                    p.requires_grad = True
             elif "bert" in self.model_name:
-                for param in self.model.classifier.parameters():
-                    param.requires_grad = True
+                for p in self.model.classifier.parameters():
+                    p.requires_grad = True
             elif "vit" in self.model_name:
-                # The base model is frozen, only the custom classifier is trained
-                for param in self.classifier.parameters():
-                    param.requires_grad = True
+                for p in self.classifier.parameters():
+                    p.requires_grad = True
 
-        # Collect all trainable parameters
-        params_to_update = [p for p in self.model.parameters() if p.requires_grad]
+        params = [p for p in self.model.parameters() if p.requires_grad]
         if hasattr(self, "classifier"):
-            params_to_update.extend([p for p in self.classifier.parameters() if p.requires_grad])
+            params.extend([p for p in self.classifier.parameters() if p.requires_grad])
 
-        # Use correct optimizer and LR based on paper's spec
         if "resnet" in self.model_name and is_po_track:
-            # Paper specifies SGD for ResNet-50 head online training
-            self.optimizer = optim.SGD(params_to_update, lr=self.track_config.get("lr", 0.01))
+            self.optimizer = optim.SGD(params, lr=self.track_config.get("lr", 0.01))
         else:
-            # Paper specifies AdamW for ViT fine-tuning
-            self.optimizer = optim.AdamW(params_to_update, lr=self.track_config.get("lr", 2e-5))
+            self.optimizer = optim.AdamW(params, lr=self.track_config.get("lr", 2e-5))
 
         self.loss_fn = nn.CrossEntropyLoss()
 
@@ -260,35 +252,45 @@ class PretrainedModelWrapper(GnlModel):
             self.classifier.eval()
 
         with torch.no_grad():
+            # Text (BERT)
             if self.tokenizer:
-                if isinstance(X, list):
-                    texts = X
-                else:
-                    texts = X.tolist() if hasattr(X, "tolist") else [str(x) for x in X]
-                inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
+                texts = X if isinstance(X, list) else X.tolist()
+                inputs = self.tokenizer(
+                    texts,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=512,
+                ).to(self.device)
                 logits = self.model(**inputs).logits
+
+            # Vision Transformer
             elif "vit" in self.model_name:
                 outputs = self.model(pixel_values=X.to(self.device))
                 logits = self.classifier(outputs.last_hidden_state[:, 0])
+
+            # ResNet-50
             else:
                 logits = self.model(X.to(self.device))
+
         return torch.softmax(logits, dim=1)
 
+    # unchanged except ‘startswith’ for suffix-robust track detection
     def update(self, X_labeled, Y_labeled, track_config):
         self.model.train()
         if hasattr(self, "classifier"):
             self.classifier.train()
 
-        # Differentiate between Online (PO) and Batch (PB) updates
-        is_online_track = track_config["track"] in ["G&L-SO", "G&L-PO"]
+        # recognise e.g. G&L-SO_50 or G&L-PO_1
+        track_str = track_config["track"]
+        is_online_track = track_str.startswith("G&L-SO") or track_str.startswith("G&L-PO")
 
         if is_online_track:
-            # --- Online Update (for PO tracks) ---
-            # Get the single most recent sample
-            if self.tokenizer:
+            # --- Online update (single most recent sample) ------------------
+            if self.tokenizer:  # text
                 data = [X_labeled[-1]]
                 target = Y_labeled[-1:].to(self.device)
-            else:
+            else:  # image
                 data = X_labeled[-1:].to(self.device)
                 target = Y_labeled[-1:].to(self.device)
 
@@ -297,86 +299,105 @@ class PretrainedModelWrapper(GnlModel):
                 inputs = self.tokenizer(data, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
                 logits = self.model(**inputs).logits
             elif "vit" in self.model_name:
-                outputs = self.model(pixel_values=data)
-                logits = self.classifier(outputs.last_hidden_state[:, 0])
-            else:
+                logits = self.classifier(self.model(pixel_values=data).last_hidden_state[:, 0])
+            else:  # ResNet
                 logits = self.model(data)
 
             loss = self.loss_fn(logits, target)
             loss.backward()
             self.optimizer.step()
+
         else:
-            # --- Batch Update (for PB tracks) ---
+            # --- Batch update (PB / SB) ------------------------------------
             epochs = track_config.get("epochs_per_update", 3)
             batch_size = track_config.get("train_batch_size", 16)
 
-            if self.tokenizer:
-                # Handle text data
-                for epoch in range(epochs):
+            if self.tokenizer:  # text batches
+                for _ in range(epochs):
                     for i in range(0, len(X_labeled), batch_size):
-                        batch_texts = X_labeled[i : i + batch_size]
-                        batch_labels = Y_labeled[i : i + batch_size].to(self.device)
-                        inputs = self.tokenizer(batch_texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
+                        texts = X_labeled[i : i + batch_size]
+                        labels = Y_labeled[i : i + batch_size].to(self.device)
+                        inputs = self.tokenizer(
+                            texts,
+                            return_tensors="pt",
+                            padding=True,
+                            truncation=True,
+                            max_length=512,
+                        ).to(self.device)
 
                         self.optimizer.zero_grad()
                         logits = self.model(**inputs).logits
-                        loss = self.loss_fn(logits, batch_labels)
+                        loss = self.loss_fn(logits, labels)
                         loss.backward()
                         self.optimizer.step()
-            else:
-                # Handle image data
-                train_dataset = TensorDataset(X_labeled, Y_labeled)
-                train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-
-                for epoch in range(epochs):
-                    for data, target in train_loader:
+            else:  # image batches
+                loader = torch.utils.data.DataLoader(
+                    TensorDataset(X_labeled, Y_labeled),
+                    batch_size=batch_size,
+                    shuffle=True,
+                )
+                for _ in range(epochs):
+                    for data, target in loader:
                         data, target = data.to(self.device), target.to(self.device)
                         self.optimizer.zero_grad()
                         if "vit" in self.model_name:
-                            outputs = self.model(pixel_values=data)
-                            logits = self.classifier(outputs.last_hidden_state[:, 0])
+                            logits = self.classifier(self.model(pixel_values=data).last_hidden_state[:, 0])
                         else:
                             logits = self.model(data)
                         loss = self.loss_fn(logits, target)
                         loss.backward()
                         self.optimizer.step()
 
+    # feature extractor for save_results()
+    def extract_features(self, X):
+        with torch.no_grad():
+            if self.tokenizer:  # BERT CLS embedding
+                texts = X if isinstance(X, list) else X.tolist()
+                inp = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
+                backbone = getattr(self.model, "bert", None) or getattr(self.model, "roberta", None) or getattr(self.model, "backbone", None)
+                hidden = backbone(**inp).last_hidden_state[:, 0]
+                return hidden
+            elif "vit" in self.model_name:
+                return self.model(pixel_values=X.to(self.device)).last_hidden_state[:, 0]
+            else:  # ResNet
+                x = self.model.maxpool(self.model.relu(self.model.bn1(self.model.conv1(X.to(self.device)))))
+                feats = self.model.avgpool(self.model.layer4(self.model.layer3(self.model.layer2(self.model.layer1(x)))))
+                return torch.flatten(feats, 1)
 
+
+# --- Factory -----------------------------------------------------------------
 def get_model(name, dataset_name, device, track_config=None):
-    # INFO: track_config is required for pretrained models to configure them correctly per paper spec
     X, Y = get_data_for_protocol(dataset_name)
+    num_classes = len(torch.unique(Y)) if torch.is_tensor(Y) else len(set(Y))
 
     if torch.is_tensor(X):
         input_shape = X.shape[1:]
-    else:  # Text data
+    else:
         input_shape = None
 
-    if torch.is_tensor(Y):
-        num_classes = len(torch.unique(Y))
-    else:  # Text data
-        num_classes = len(set(Y))
-
     if name == "knn":
-        model = KnnModel(n_neighbors=7)
-        model.num_classes = num_classes
-        return model
+        return KnnModel(n_neighbors=7, num_classes=num_classes)
+
     elif name == "perceptron":
         if input_shape is None:
             raise ValueError("Cannot determine input shape for perceptron")
-        input_dim = np.prod(input_shape)
-        return PerceptronModel(input_dim, num_classes, lr=0.1, device=device)
+        return PerceptronModel(np.prod(input_shape), num_classes, lr=1.0, device=device)
+
     elif name == "cnn":
         if input_shape is None:
             raise ValueError("Cannot determine input shape for CNN")
-        # Handle both grayscale (1) and color (3)
         in_channels = input_shape[0] if len(input_shape) == 3 else 1
-        input_size = input_shape[1] if len(input_shape) >= 2 else 28
-        return CnnModel(in_channels, num_classes, input_size, lr=0.01, device=device)
+        return CnnModel(in_channels, num_classes, input_shape[1], lr=0.01, device=device)
+
     elif name in ["resnet50", "vit-b-16", "bert-base"]:
         if track_config is None:
-            raise ValueError(f"track_config must be provided for pretrained model '{name}'")
-
-        model_map = {"resnet50": "resnet50", "vit-b-16": "google/vit-base-patch16-224-in21k", "bert-base": "bert-base-uncased"}
+            raise ValueError("track_config must be provided for pretrained model")
+        model_map = {
+            "resnet50": "resnet50",
+            "vit-b-16": "google/vit-base-patch16-224-in21k",
+            "bert-base": "bert-base-uncased",
+        }
         return PretrainedModelWrapper(model_map[name], num_classes, track_config, device=device)
+
     else:
         raise ValueError(f"Model '{name}' not supported.")

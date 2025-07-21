@@ -4,6 +4,7 @@ import json
 import os
 import matplotlib.pyplot as plt
 import torch
+import random
 
 
 class GnlProtocol:
@@ -21,6 +22,12 @@ class GnlProtocol:
 
         self.cumulative_errors = 0
         self.error_history = []
+
+        seed = track_config.get("seed")
+        if seed is not None:
+            random.seed(seed)
+            np.random.seed(seed)
+            torch.manual_seed(seed)
 
     def run(self):
         pbar = tqdm(range(self.n_pool), desc="G&L Protocol")
@@ -61,15 +68,24 @@ class GnlProtocol:
             self.is_error.append(made_error)
             self.unlabeled_indices.remove(selected_pool_idx)
 
-            # Step 5: Update model based on track rules
-            # Model update happens AFTER prediction and error counting
-            update_cadence = self.track_config.get("K", 1)
+            # Step 5 – model-update cadence (online vs batch) ------------
+            track_str = self.track_config["track"]
+
+            # If K not given explicitly, try to parse numeric suffix, e.g. *_50
+            if "K" in self.track_config:
+                update_cadence = self.track_config["K"]
+            else:
+                try:
+                    update_cadence = int(track_str.split("_")[1])
+                except (IndexError, ValueError):
+                    update_cadence = 1
+
             should_update = False
 
-            if self.track_config["track"] in ["G&L-SO", "G&L-PO"]:
+            if track_str.startswith(("G&L-SO", "G&L-PO")):
                 # Online tracks: update after every sample
                 should_update = True
-            elif self.track_config["track"] in ["G&L-SB", "G&L-PB"]:
+            elif track_str.startswith(("G&L-SB", "G&L-PB")):
                 # Batch tracks: update every K samples
                 if len(self.labeled_indices) % update_cadence == 0:
                     should_update = True
@@ -91,7 +107,7 @@ class GnlProtocol:
         return self.error_history, self.labeled_indices, self.is_error
 
 
-def save_results(error_history, labeled_indices, is_error, params, output_dir, X_pool=None, Y_pool=None):
+def save_results(error_history, labeled_indices, is_error, params, output_dir, model=None, X_pool=None, Y_pool=None):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
@@ -148,7 +164,13 @@ def save_results(error_history, labeled_indices, is_error, params, output_dir, X
             print(f"Saved labels to {label_path}")
 
         if not os.path.exists(feature_path):
-            if not isinstance(X_pool, list):
+            if model is not None:
+                with torch.no_grad():
+                    feats = model.extract_features(X_pool)
+                torch.save(feats.cpu() if torch.is_tensor(feats) else feats, feature_path)
+                print(f"Saved features to {feature_path}")
+            elif not isinstance(X_pool, list):
+                # Fallback: raw pixels (old behaviour)
                 X_flat = X_pool.reshape(X_pool.shape[0], -1) if torch.is_tensor(X_pool) else X_pool
                 torch.save(X_flat, feature_path)
                 print(f"Saved features to {feature_path}")
