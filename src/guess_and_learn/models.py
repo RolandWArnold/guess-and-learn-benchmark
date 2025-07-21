@@ -52,7 +52,7 @@ class KnnModel(GnlModel):
         return torch.tensor(proba, dtype=torch.float32)
 
     def update(self, X_labeled, Y_labeled, track_config):
-        # k-NN is non-parametric, "update" means refitting on all available data
+        # k-NN is non-parametric, "update" means refitting on all available data ("memory append")
         X_flat = X_labeled.reshape(X_labeled.shape[0], -1).cpu().numpy()
         Y_np = Y_labeled.cpu().numpy()
 
@@ -109,6 +109,7 @@ class SimpleCnn(nn.Module):
         super(SimpleCnn, self).__init__()
         self.input_size = input_size
 
+        # Architecture matches paper: Conv-ReLU-Pool ×3
         self.features = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
             nn.ReLU(),
@@ -126,6 +127,7 @@ class SimpleCnn(nn.Module):
             dummy_input = torch.zeros(1, in_channels, input_size, input_size)
             linear_input_size = self.features(dummy_input).flatten(1).shape[1]
 
+        # MLP with 512 units and dropout 0.5
         self.classifier = nn.Sequential(
             nn.Flatten(),
             nn.Linear(linear_input_size, 512),
@@ -156,7 +158,7 @@ class CnnModel(GnlModel):
         return torch.softmax(logits, dim=1)
 
     def update(self, X_labeled, Y_labeled, track_config):
-        # Batch update
+        # Batch update for SB track
         self.model.train()
         epochs = track_config.get('epochs_per_update', 5)
         batch_size = track_config.get('train_batch_size', 32)
@@ -198,7 +200,7 @@ class PretrainedModelWrapper(GnlModel):
         else:
             raise ValueError(f"Model name {model_name} not supported")
 
-        # --- FIX: Configure model parameters and optimizer in __init__ based on track ---
+        # Configure model parameters and optimizer in __init__ based on track ---
         self._configure_for_track()
 
     def _configure_for_track(self):
@@ -233,7 +235,7 @@ class PretrainedModelWrapper(GnlModel):
         if hasattr(self, 'classifier'):
             params_to_update.extend([p for p in self.classifier.parameters() if p.requires_grad])
 
-        # FIX: Use correct optimizer and LR based on paper's spec
+        # Use correct optimizer and LR based on paper's spec
         if 'resnet' in self.model_name and is_po_track:
             # Paper specifies SGD for ResNet-50 head online training
             self.optimizer = optim.SGD(params_to_update, lr=self.track_config.get('lr', 0.01))
@@ -269,7 +271,7 @@ class PretrainedModelWrapper(GnlModel):
         if hasattr(self, 'classifier'):
             self.classifier.train()
 
-        # FIX: Differentiate between Online (PO) and Batch (PB) updates
+        # Differentiate between Online (PO) and Batch (PB) updates
         is_online_track = track_config['track'] in ['G&L-SO', 'G&L-PO']
 
         if is_online_track:
@@ -287,10 +289,10 @@ class PretrainedModelWrapper(GnlModel):
                 inputs = self.tokenizer(data, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
                 logits = self.model(**inputs).logits
             elif 'vit' in self.model_name:
-                 outputs = self.model(pixel_values=data)
-                 logits = self.classifier(outputs.last_hidden_state[:, 0])
+                outputs = self.model(pixel_values=data)
+                logits = self.classifier(outputs.last_hidden_state[:, 0])
             else:
-                 logits = self.model(data)
+                logits = self.model(data)
 
             loss = self.loss_fn(logits, target)
             loss.backward()
@@ -332,7 +334,7 @@ class PretrainedModelWrapper(GnlModel):
                         self.optimizer.step()
 
 def get_model(name, dataset_name, device, track_config=None):
-    # FIX: track_config is now required for pretrained models to configure them correctly
+    # INFO: track_config is required for pretrained models to configure them correctly per paper spec
     X, Y = get_data_for_protocol(dataset_name)
 
     if torch.is_tensor(X):
