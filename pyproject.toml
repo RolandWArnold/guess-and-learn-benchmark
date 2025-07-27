@@ -1,0 +1,5 @@
+[tool.black]
+line-length = 200      # max characters per line
+# optional extras:
+# target-version = ["py311"]   # tell Black which Python syntax to target
+# exclude = '\.ipynb$'          # regex of files/dirs to skip

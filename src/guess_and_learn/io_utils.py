@@ -20,7 +20,8 @@ import botocore.exceptions as botoexc
 # ------------------------------------------------------------------ #
 S3_PREFIX = os.getenv("RESULTS_S3_PREFIX", "").rstrip("/")
 _HAS_S3 = S3_PREFIX.startswith("s3://")
-_s3 = boto3.client("s3") if _HAS_S3 else None
+
+_s3 = boto3.client("s3", config=boto3.session.Config(retries={"max_attempts": 5, "mode": "standard"})) if _HAS_S3 else None
 
 
 def _split(prefix: str) -> tuple[str, str]:

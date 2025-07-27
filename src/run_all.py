@@ -29,6 +29,8 @@ datasets.config.DOWNLOAD_MODE = datasets.DownloadMode.REUSE_CACHE_IF_EXISTS
 
 torch.backends.cudnn.enabled = True
 torch.backends.nnpack.enabled = False
+torch.use_deterministic_algorithms(True, warn_only=True)
+torch.backends.cudnn.benchmark = False
 
 
 # ────────────────────────────────────────────────────────────────────

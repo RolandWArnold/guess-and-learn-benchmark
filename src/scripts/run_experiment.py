@@ -1,7 +1,9 @@
 import argparse
 import torch
 
-torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.enabled = True
+torch.backends.nnpack.enabled = False
+torch.use_deterministic_algorithms(True, warn_only=True)
 torch.backends.cudnn.benchmark = False
 
 import numpy as np

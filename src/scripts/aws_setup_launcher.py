@@ -131,7 +131,11 @@ def push_to_ecr():
 
     repo_uri = resolve_ecr_uri()
     pw = subprocess.check_output(f"aws ecr get-login-password --region {REGION}", shell=True).decode()
-    subprocess.run(["docker", "login", "--username", "AWS", "--password-stdin", repo_uri], input=pw.encode(), check=True)
+    subprocess.run(
+        ["docker", "login", "--username", "AWS", "--password-stdin", repo_uri],
+        input=pw.encode(),
+        check=True,
+    )
 
     local_tag = f"{REPO_NAME}:{IMAGE_TAG}"
     remote_tag = f"{repo_uri}:{IMAGE_TAG}"

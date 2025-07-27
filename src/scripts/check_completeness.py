@@ -19,21 +19,23 @@ SEEDS = list(range(5))
 # Valid pairings for each dataset
 VALID_PAIRS = {
     "mnist": [
-        ("knn", "G&L-SO"), ("knn", "G&L-SB_50"),
-        ("perceptron", "G&L-SO"), ("perceptron", "G&L-SB_50"),
-        ("cnn", "G&L-SO"), ("cnn", "G&L-SB_50"),
-        ("resnet50", "G&L-PO"), ("resnet50", "G&L-PB_50"),
-        ("vit-b-16", "G&L-PO"), ("vit-b-16", "G&L-PB_50"),
+        ("knn", "G&L-SO"),
+        ("knn", "G&L-SB_50"),
+        ("perceptron", "G&L-SO"),
+        ("perceptron", "G&L-SB_50"),
+        ("cnn", "G&L-SO"),
+        ("cnn", "G&L-SB_50"),
+        ("resnet50", "G&L-PO"),
+        ("resnet50", "G&L-PB_50"),
+        ("vit-b-16", "G&L-PO"),
+        ("vit-b-16", "G&L-PB_50"),
     ],
-    "ag_news": [
-        ("text-knn", "G&L-SO"), ("text-knn", "G&L-SB_50"),
-        ("text-perceptron", "G&L-SO"), ("text-perceptron", "G&L-SB_50"),
-        ("bert-base", "G&L-PO"), ("bert-base", "G&L-PB_50"),
-    ],
+    "ag_news": [("text-knn", "G&L-SO"), ("text-knn", "G&L-SB_50"), ("text-perceptron", "G&L-SO"), ("text-perceptron", "G&L-SB_50"), ("bert-base", "G&L-PO"), ("bert-base", "G&L-PB_50")],
 }
 
 # Define all tracks for robust parsing
 ALL_TRACKS = {"G&L-SO", "G&L-PO", "G&L-SB_50", "G&L-PB_50"}
+
 
 def generate_expected_filenames(subset_size: int) -> set:
     """Generates the set of all expected filenames for the s300 subset."""
@@ -42,12 +44,10 @@ def generate_expected_filenames(subset_size: int) -> set:
         for model, track in pairs:
             for strategy in STRATEGIES:
                 for seed in SEEDS:
-                    stem = (
-                        f"{dataset}_{model}_{strategy}_{track}_"
-                        f"seed{seed}_s{subset_size}"
-                    )
+                    stem = f"{dataset}_{model}_{strategy}_{track}_" f"seed{seed}_s{subset_size}"
                     expected.add(f"{stem}_results.json")
     return expected
+
 
 def main():
     parser = argparse.ArgumentParser(description="Check for missing G&L experiments.")
@@ -86,18 +86,20 @@ def main():
             stem = filename.removesuffix("_results.json")
 
             # 1. Parse from the end (structured part)
-            rest, subset_str = stem.rsplit('_s', 1)
-            rest, seed_str = rest.rsplit('_seed', 1)
+            rest, subset_str = stem.rsplit("_s", 1)
+            rest, seed_str = rest.rsplit("_seed", 1)
             seed = int(seed_str)
 
             # 2. Find the track
             track = next((t for t in ALL_TRACKS if rest.endswith(f"_{t}")), None)
-            if not track: continue
+            if not track:
+                continue
             rest = rest.removesuffix(f"_{track}")
 
             # 3. Find the strategy (longest match first for 'least_confidence')
             strategy = next((s for s in sorted(STRATEGIES, key=len, reverse=True) if rest.endswith(f"_{s}")), None)
-            if not strategy: continue
+            if not strategy:
+                continue
             rest = rest.removesuffix(f"_{strategy}")
 
             # 4. What's left is "dataset_model"
@@ -107,11 +109,12 @@ def main():
                 model = rest.removeprefix("ag_news_")
             else:
                 # Handle single-word datasets
-                parts = rest.split('_', 1)
+                parts = rest.split("_", 1)
                 if len(parts) == 2 and parts[0] in DATASETS:
                     dataset, model = parts
 
-            if not all([dataset, model]): continue
+            if not all([dataset, model]):
+                continue
 
             # Group experiments to minimize the number of commands
             key = (dataset, model, track)
@@ -142,6 +145,7 @@ def main():
             f"    --workers 8\n"
         )
         print(command)
+
 
 if __name__ == "__main__":
     main()

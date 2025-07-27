@@ -251,7 +251,6 @@ class CnnModel(GnlModel):
 class TextPerceptronModel(GnlModel):
     """Perceptron using a PRE-FITTED TF-IDF vectoriser."""
 
-    # FIX: Init now accepts a pre-fitted vectorizer and input_dim
     def __init__(self, input_dim, num_classes, vectorizer, lr=0.1, device=None):
         super().__init__(device)
         self.vec = vectorizer  # Use the passed, pre-fitted vectorizer
@@ -269,22 +268,16 @@ class TextPerceptronModel(GnlModel):
 
     # ----- API --------------------------------------------------------
     def predict(self, X):
-        # FIX: No need for a `self.lin is None` check anymore
         with torch.no_grad():
             logits = self.lin(self._featurise(X))
         return torch.argmax(torch.softmax(logits, dim=1), dim=1)
 
     def predict_proba(self, X):
-        # FIX: No need for a `self.lin is None` check anymore
         with torch.no_grad():
             logits = self.lin(self._featurise(X))
         return torch.softmax(logits, dim=1)
 
     def update(self, X_labeled, Y_labeled, track_config):
-        """
-        FIX: The update logic is now simplified. It no longer fits the
-        vectorizer or initializes the model. It only performs weight updates.
-        """
         online = track_config["track"].startswith("G&L-SO")
         if online:
             # For online, only train on the most recent sample
@@ -313,7 +306,6 @@ class TextPerceptronModel(GnlModel):
 class TextKnnModel(KnnModel):
     """k-NN over PRE-FITTED TF-IDF features for raw-string datasets."""
 
-    # FIX: Init now accepts a pre-fitted vectorizer
     def __init__(self, n_neighbors, num_classes, vectorizer, **kwargs):
         super().__init__(n_neighbors=n_neighbors, num_classes=num_classes, **kwargs)
         self.vec = vectorizer  # Use the passed, pre-fitted vectorizer
@@ -342,17 +334,9 @@ class TextKnnModel(KnnModel):
         return torch.tensor(proba, dtype=torch.float32, device=self.device)
 
     def update(self, X_labeled, Y_labeled, track_config):
-        """
-        FIX: The update logic is now simplified. It no longer fits the
-        vectorizer. It just calls the parent update method.
-        """
-        # The incorrect `self.vec.fit(X_labeled)` is removed.
         super().update(X_labeled, Y_labeled, track_config)
 
     def extract_features(self, X):
-        """
-        FIX: Consistently uses the pre-fitted vectorizer to transform data.
-        """
         X_tfidf = self.vec.transform(X).toarray()
         return torch.tensor(X_tfidf, dtype=torch.float32, device=self.device)
 
@@ -558,7 +542,6 @@ class PretrainedModelWrapper(GnlModel):
             elif "vit" in self.model_name:  # ViT
                 return self.model(pixel_values=self._prep_vision(X)).last_hidden_state[:, 0]
             else:  # ResNet-50
-                # FIX: Use the robust feature_extractor created in __init__
                 x = self._prep_vision(X)
                 feats = self.feature_extractor(x)
                 return torch.flatten(feats, 1)
@@ -586,7 +569,6 @@ def get_model(name, dataset_name, device, track_config=None):
     # --- Classical Models --------------------------------------------------
     if name in ["knn", "text-knn"]:
         if dataset_name.lower() == "ag_news":
-            # FIX: Pre-fit the vectorizer on the entire unlabeled pool
             print("Fitting TF-IDF vectorizer for k-NN on AG News...")
             vectorizer = TfidfVectorizer(max_features=20000)
             vectorizer.fit(X)
@@ -596,7 +578,6 @@ def get_model(name, dataset_name, device, track_config=None):
     elif name in ["perceptron", "text-perceptron"]:
         lr = track_config.get("lr", 0.1) if track_config else 0.1
         if dataset_name.lower() == "ag_news":
-            # FIX: Pre-fit the vectorizer on the entire unlabeled pool
             print("Fitting TF-IDF vectorizer for Perceptron on AG News...")
             vectorizer = TfidfVectorizer(max_features=20000)
             vectorizer.fit(X)

@@ -14,6 +14,7 @@ import matplotlib
 # Use a non-interactive backend to prevent plots from showing up in a window
 matplotlib.use("Agg")
 
+
 def replot_experiment(json_path: Path):
     """
     Loads a results.json file and saves a new plot based on its data.
@@ -41,10 +42,7 @@ def replot_experiment(json_path: Path):
     ax.plot(error_history, linewidth=2)
 
     # Construct a title from the parameters
-    title = (
-        f"G&L Error Curve: {params.get('model', 'N/A').upper()} on "
-        f"{params.get('dataset', 'N/A').upper()} ({params.get('strategy', 'N/A').capitalize()})"
-    )
+    title = f"G&L Error Curve: {params.get('model', 'N/A').upper()} on " f"{params.get('dataset', 'N/A').upper()} ({params.get('strategy', 'N/A').capitalize()})"
     ax.set_title(title, fontsize=16)
     ax.set_xlabel("Number of Labeled Samples", fontsize=12)
     ax.set_ylabel("Cumulative Errors", fontsize=12)
@@ -55,12 +53,7 @@ def replot_experiment(json_path: Path):
         final_error = error_history[-1]
         num_samples = len(error_history)
         ax.annotate(
-            f"Final Error: {final_error}",
-            xy=(num_samples - 1, final_error),
-            xytext=(-80, 20),
-            textcoords="offset points",
-            arrowprops=dict(arrowstyle="->", color="red", alpha=0.7),
-            ha='center'
+            f"Final Error: {final_error}", xy=(num_samples - 1, final_error), xytext=(-80, 20), textcoords="offset points", arrowprops=dict(arrowstyle="->", color="red", alpha=0.7), ha="center"
         )
 
     # --- Save the new plot ---
