@@ -21,6 +21,8 @@ transformers = "*"
 scipy = "*"
 black = {extras = ["jupyter"], version = "*"}
 boto3 = "*"
+gputil = "*"
+psutil = "*"
 
 [dev-packages]
 
