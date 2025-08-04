@@ -3,11 +3,14 @@
 import platform
 import psutil
 import torch
+
 try:
     import GPUtil
+
     gpu_available = True
 except ImportError:
     gpu_available = False
+
 
 def get_system_specs():
     """Gathers and prints key hardware and software specifications."""
@@ -30,7 +33,7 @@ def get_system_specs():
     print(f"Python Version: {platform.python_version()}")
 
     # PyTorch and CUDA Info
-    if 'torch' in globals():
+    if "torch" in globals():
         print(f"PyTorch Version: {torch.__version__}")
         if torch.cuda.is_available():
             print(f"CUDA Version (available to PyTorch): {torch.version.cuda}")
@@ -54,6 +57,7 @@ def get_system_specs():
     else:
         print("\n--- GPU Specifications ---")
         print("GPU information not available (GPUtil not installed or CUDA not available).")
+
 
 if __name__ == "__main__":
     get_system_specs()

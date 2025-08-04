@@ -18,7 +18,7 @@ import numpy as np
 import torch, datasets  # 3rd-party
 
 from guess_and_learn.datasets import get_data_for_protocol
-from guess_and_learn.models import get_model
+from guess_and_learn.models import ExperimentConfig, get_model
 from guess_and_learn.strategies import get_strategy
 from guess_and_learn.protocol import GnlProtocol, save_results
 from guess_and_learn.io_utils import s3_enabled, s3_exists, s3_download, s3_upload
@@ -33,34 +33,22 @@ torch.use_deterministic_algorithms(True, warn_only=True)
 torch.backends.cudnn.benchmark = False
 
 
-# ────────────────────────────────────────────────────────────────────
-# 1.  Per-experiment worker
-# ────────────────────────────────────────────────────────────────────
-def _exp_id(seed: int, dataset: str, model: str, strategy: str, track: str, subset_cap: int | None) -> str:
-    base_name = f"{dataset}_{model}_{strategy}_{track}_seed{seed}"
-    if subset_cap:
-        base_name += f"_s{subset_cap}"
-    return base_name
-
-
-def run_single_experiment(exp_tuple):
-    (seed, dataset, model_name, strategy_name, track, K, device, reset_weights, subset_cap, output_dir) = exp_tuple
+def run_single_experiment(exp_config: ExperimentConfig):
     start = time.time()
 
-    exp_tag = _exp_id(seed, dataset, model_name, strategy_name, track, subset_cap)
-    results_p = Path(output_dir) / f"{exp_tag}_results.json"
+    exp_tag = exp_config.exp_id()
 
     # --------------------------------------------------------------- #
     # 0.  Skip / restore if artefact exists                           #
     # --------------------------------------------------------------- #
 
     # ─── Treat the plot as the final artifact ──────────────────────────
-    plot_path = Path(output_dir) / f"{exp_tag}_plot.png"
+    plot_path = exp_config.output_dir / f"{exp_tag}_plot.png"
 
     # helper to delete any stray files
     def _cleanup():
         for ext in ("_results.json", "_plot.png", "_labels.pt", "_features.pt"):
-            p = Path(output_dir) / f"{exp_tag}{ext}"
+            p = exp_config.output_dir / f"{exp_tag}{ext}"
             if p.exists():
                 try:
                     p.unlink()
@@ -91,45 +79,41 @@ def run_single_experiment(exp_tuple):
             print(f"[WARN]    {exp_tag} plot corrupted in S3—cleaning up and re-running")
             _cleanup()
 
-    print(f"[{os.getpid()}] {dataset} {model_name} {strategy_name} {track} seed={seed} …")
+    print(f"[{os.getpid()}] {exp_config.dataset} {exp_config.model} {exp_config.strategy} {exp_config.track} seed={exp_config.seed} …")
 
     # deterministic RNG — reproducible per run
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+    random.seed(exp_config.seed)
+    np.random.seed(exp_config.seed)
+    torch.manual_seed(exp_config.seed)
 
-    # 1. load FULL pool (keeps correct num_classes)
-    X_full, Y_full = get_data_for_protocol(dataset)
+    # 1. load FULL pool
+    X_full, Y_full = get_data_for_protocol(exp_config.dataset)
 
     # 2. instantiate model & strategy before any sub-sampling
-    model = get_model(model_name, dataset, device, track_config={"track": track, "K": K, "seed": seed})
-    strategy = get_strategy(strategy_name)
-    track_cfg = {"track": track, "K": K, "reset_weights": reset_weights, "seed": seed}
-    if model_name == "cnn":
-        track_cfg.update(lr=0.01, epochs_per_update=5, train_batch_size=32)
+    model = get_model(exp_config)
+    strategy = get_strategy(exp_config.strategy)
 
-    # 3. optional sub-sampling AFTER model init
-    if subset_cap and len(Y_full) > subset_cap:
-        sel = np.random.choice(len(Y_full), subset_cap, replace=False)
+    if exp_config.subset and len(Y_full) > exp_config.subset:
+        sel = np.random.choice(len(Y_full), exp_config.subset, replace=False)
         X = [X_full[i] for i in sel] if isinstance(X_full, list) else X_full[sel]
         Y = Y_full[sel]
     else:
         X, Y = X_full, Y_full
 
-    # 4. run protocol
-    proto = GnlProtocol(model, strategy, X, Y, track_cfg)
+    # 3. run protocol
+    proto = GnlProtocol(model, strategy, X, Y, exp_config)
     error_hist, lab_ix, is_err = proto.run()
 
-    params = dict(seed=seed, dataset=dataset, model=model_name, strategy=strategy_name, track=track, subset=subset_cap)
+    params = dict(seed=exp_config.seed, dataset=exp_config.dataset, model=exp_config.model, strategy=exp_config.strategy, track=exp_config.track, subset=exp_config.subset)
     duration = time.time() - start
 
     # persist locally
-    save_results(duration, error_hist, lab_ix, is_err, params, output_dir, model, X_pool=X, Y_pool=Y)
+    save_results(duration, error_hist, lab_ix, is_err, params, exp_config.output_dir, model, X_pool=X, Y_pool=Y)
 
     # mirror to S3 (if enabled)
     if s3_enabled():
         for ext in ("_results.json", "_plot.png", "_features.pt", "_labels.pt"):
-            p = Path(output_dir) / f"{exp_tag}{ext}"
+            p = exp_config.output_dir / f"{exp_tag}{ext}"
             s3_upload(p, quiet=True)
 
 
@@ -163,23 +147,40 @@ def expand_grid(args) -> list[tuple]:
 
     pretrained_models = {"resnet50", "vit-b-16", "bert-base"}
     device = torch.device(args.devices)
+    output_dir = Path(args.output_dir)
     jobs = []
 
-    for seed, ds, strat, track in itertools.product(seeds, datasets_, strategies, tracks):
-        K = int(re.search(r"(\d+)$", track).group(1)) if re.search(r"(\d+)$", track) else 1
+    for seed, ds, strat, track_name in itertools.product(seeds, datasets_, strategies, tracks):
+        K = int(re.search(r"(\d+)$", track_name).group(1)) if re.search(r"(\d+)$", track_name) else 1
         mdl_list = models_t if ds == "ag_news" else models_v
         for mdl in mdl_list:
-            # Add this filter to skip invalid model/track pairs
             is_pretrained_model = mdl in pretrained_models
-            is_pretrained_track = track.startswith("G&L-P")
+            is_pretrained_track = track_name.startswith("G&L-P")
 
             if is_pretrained_model and not is_pretrained_track:
-                continue  # Skip running a pretrained model on a scratch track
+                continue
             if not is_pretrained_model and is_pretrained_track:
-                continue  # Skip running a scratch model on a pretrained track
+                continue
 
-            cap = subset_map.get(ds, args.subset)
-            jobs.append((seed, ds, mdl, strat, track, K, device, args.reset_weights, cap, args.output_dir))
+            # Create the single, comprehensive config object
+            exp_config = ExperimentConfig(
+                dataset=ds,
+                model=mdl,
+                strategy=strat,
+                track=track_name,
+                seed=seed,
+                subset=subset_map.get(ds, args.subset),
+                device=device,
+                output_dir=output_dir,
+                reset_weights=args.reset_weights,
+                K=K,
+                is_online=track_name.startswith(("G&L-SO", "G&L-PO")),
+                is_pretrained_track=is_pretrained_track,
+            )
+            if mdl == "cnn":
+                exp_config.hyperparams.update(lr=0.01, epochs_per_update=5, train_batch_size=32)
+
+            jobs.append(exp_config)
     return jobs
 
 

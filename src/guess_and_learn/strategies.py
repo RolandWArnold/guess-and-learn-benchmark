@@ -4,24 +4,38 @@ from tqdm import tqdm
 
 
 class AcquisitionStrategy:
-    def select(self, model, unlabeled_indices, X_pool, batch_size=256):
+    def select(self, model, unlabeled_indices, X_pool, n_to_acquire=1, batch_size=256):
+        """
+        Selects a batch of samples from the unlabeled pool.
+
+        Args:
+            model: The current model instance.
+            unlabeled_indices: Indices of the unlabeled samples.
+            X_pool: The entire data pool.
+            n_to_acquire: The number of samples to select.
+            batch_size: The processing batch size for GPU memory efficiency.
+
+        Returns:
+            A list of the top `n_to_acquire` indices.
+        """
         raise NotImplementedError
 
 
 class RandomStrategy(AcquisitionStrategy):
-    def select(self, model, unlabeled_indices, X_pool, batch_size=256):
-        return np.random.choice(unlabeled_indices)
+    def select(self, model, unlabeled_indices, X_pool, n_to_acquire=1, batch_size=256):
+        """Efficiently selects a random subset without replacement."""
+        num_to_select = min(n_to_acquire, len(unlabeled_indices))
+        return np.random.choice(unlabeled_indices, size=num_to_select, replace=False)
 
 
 class ConfidenceStrategy(AcquisitionStrategy):
-    """Select the example with HIGHEST confidence (easy-first)"""
+    """Selects the batch of examples with the HIGHEST confidence (easy-first)."""
 
-    def select(self, model, unlabeled_indices, X_pool, batch_size=256):
-        best_confidence = -1.0
-        best_idx = -1
+    def select(self, model, unlabeled_indices, X_pool, n_to_acquire=1, batch_size=256):
+        all_scores = []
+        all_indices = []
 
-        # Use tqdm for a progress bar during selection
-        pbar = tqdm(range(0, len(unlabeled_indices), batch_size), desc="Confidence-Select", leave=False)
+        pbar = tqdm(range(0, len(unlabeled_indices), batch_size), desc="Confidence-Select (Batch)", leave=False)
 
         with torch.no_grad():
             for i in pbar:
@@ -34,23 +48,26 @@ class ConfidenceStrategy(AcquisitionStrategy):
                 outputs = model.predict_proba(X_batch)
                 confidence, _ = torch.max(outputs, dim=1)
 
-                batch_best_confidence, batch_best_local_idx = torch.max(confidence, dim=0)
+                all_scores.append(confidence)
+                all_indices.extend(batch_indices)
 
-                if batch_best_confidence > best_confidence:
-                    best_confidence = batch_best_confidence.item()
-                    best_idx = batch_indices[batch_best_local_idx.item()]
+        all_scores = torch.cat(all_scores)
 
-        return best_idx
+        # Sort scores in descending order (highest confidence first)
+        top_k_indices = torch.topk(all_scores, k=min(n_to_acquire, len(all_scores))).indices
+
+        best_indices = [all_indices[i] for i in top_k_indices]
+        return best_indices
 
 
 class LeastConfidenceStrategy(AcquisitionStrategy):
-    """Select the example with LOWEST confidence (uncertainty sampling)"""
+    """Selects the batch of examples with the LOWEST confidence (uncertainty sampling)."""
 
-    def select(self, model, unlabeled_indices, X_pool, batch_size=256):
-        min_confidence = float("inf")
-        worst_idx = -1
+    def select(self, model, unlabeled_indices, X_pool, n_to_acquire=1, batch_size=256):
+        all_scores = []
+        all_indices = []
 
-        pbar = tqdm(range(0, len(unlabeled_indices), batch_size), desc="LeastConfidence-Select", leave=False)
+        pbar = tqdm(range(0, len(unlabeled_indices), batch_size), desc="LeastConfidence-Select (Batch)", leave=False)
 
         with torch.no_grad():
             for i in pbar:
@@ -65,23 +82,30 @@ class LeastConfidenceStrategy(AcquisitionStrategy):
                     continue
 
                 confidence, _ = torch.max(outputs, dim=1)
-                batch_min_confidence, batch_worst_local_idx = torch.min(confidence, dim=0)
 
-                if batch_min_confidence < min_confidence:
-                    min_confidence = batch_min_confidence.item()
-                    worst_idx = batch_indices[batch_worst_local_idx.item()]
+                all_scores.append(confidence)
+                all_indices.extend(batch_indices)
 
-        return worst_idx if worst_idx != -1 else np.random.choice(unlabeled_indices)
+        if not all_scores:
+            return RandomStrategy().select(model, unlabeled_indices, X_pool, n_to_acquire, batch_size)
+
+        all_scores = torch.cat(all_scores)
+
+        # Sort scores in ascending order (lowest confidence first) by using largest=False
+        top_k_indices = torch.topk(all_scores, k=min(n_to_acquire, len(all_scores)), largest=False).indices
+
+        best_indices = [all_indices[i] for i in top_k_indices]
+        return best_indices
 
 
 class MarginStrategy(AcquisitionStrategy):
-    """Select the example with SMALLEST margin (difference between top 2 predictions)"""
+    """Selects the batch of examples with the SMALLEST margin."""
 
-    def select(self, model, unlabeled_indices, X_pool, batch_size=256):
-        min_margin = float("inf")
-        best_idx = -1
+    def select(self, model, unlabeled_indices, X_pool, n_to_acquire=1, batch_size=256):
+        all_scores = []
+        all_indices = []
 
-        pbar = tqdm(range(0, len(unlabeled_indices), batch_size), desc="Margin-Select", leave=False)
+        pbar = tqdm(range(0, len(unlabeled_indices), batch_size), desc="Margin-Select (Batch)", leave=False)
 
         with torch.no_grad():
             for i in pbar:
@@ -98,23 +122,29 @@ class MarginStrategy(AcquisitionStrategy):
                 sorted_probs, _ = torch.sort(outputs, dim=1, descending=True)
                 margins = sorted_probs[:, 0] - sorted_probs[:, 1]
 
-                batch_min_margin, batch_best_local_idx = torch.min(margins, dim=0)
+                all_scores.append(margins)
+                all_indices.extend(batch_indices)
 
-                if batch_min_margin < min_margin:
-                    min_margin = batch_min_margin.item()
-                    best_idx = batch_indices[batch_best_local_idx.item()]
+        if not all_scores:
+            return RandomStrategy().select(model, unlabeled_indices, X_pool, n_to_acquire, batch_size)
 
-        return best_idx if best_idx != -1 else np.random.choice(unlabeled_indices)
+        all_scores = torch.cat(all_scores)
+
+        # Sort scores in ascending order (smallest margin first) by using largest=False
+        top_k_indices = torch.topk(all_scores, k=min(n_to_acquire, len(all_scores)), largest=False).indices
+
+        best_indices = [all_indices[i] for i in top_k_indices]
+        return best_indices
 
 
 class EntropyStrategy(AcquisitionStrategy):
-    """Select the example with HIGHEST entropy (most uncertain)"""
+    """Selects the batch of examples with the HIGHEST entropy."""
 
-    def select(self, model, unlabeled_indices, X_pool, batch_size=256):
-        max_entropy = -1.0
-        best_idx = -1
+    def select(self, model, unlabeled_indices, X_pool, n_to_acquire=1, batch_size=256):
+        all_scores = []
+        all_indices = []
 
-        pbar = tqdm(range(0, len(unlabeled_indices), batch_size), desc="Entropy-Select", leave=False)
+        pbar = tqdm(range(0, len(unlabeled_indices), batch_size), desc="Entropy-Select (Batch)", leave=False)
 
         with torch.no_grad():
             for i in pbar:
@@ -127,16 +157,23 @@ class EntropyStrategy(AcquisitionStrategy):
                 outputs = model.predict_proba(X_batch)
                 entropy = -torch.sum(outputs * torch.log(outputs + 1e-9), dim=1)
 
-                batch_max_entropy, batch_best_local_idx = torch.max(entropy, dim=0)
+                all_scores.append(entropy)
+                all_indices.extend(batch_indices)
 
-                if batch_max_entropy > max_entropy:
-                    max_entropy = batch_max_entropy.item()
-                    best_idx = batch_indices[batch_best_local_idx.item()]
+        if not all_scores:
+            return RandomStrategy().select(model, unlabeled_indices, X_pool, n_to_acquire, batch_size)
 
-        return best_idx if best_idx != -1 else np.random.choice(unlabeled_indices)
+        all_scores = torch.cat(all_scores)
+
+        # Sort scores in descending order (highest entropy first)
+        top_k_indices = torch.topk(all_scores, k=min(n_to_acquire, len(all_scores))).indices
+
+        best_indices = [all_indices[i] for i in top_k_indices]
+        return best_indices
 
 
 def get_strategy(name: str):
+    """Factory function to get a strategy instance by name."""
     strategies = {
         "random": RandomStrategy,
         "confidence": ConfidenceStrategy,

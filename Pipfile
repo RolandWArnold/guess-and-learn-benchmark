@@ -23,6 +23,7 @@ black = {extras = ["jupyter"], version = "*"}
 boto3 = "*"
 gputil = "*"
 psutil = "*"
+rich = "*"
 
 [dev-packages]
 
