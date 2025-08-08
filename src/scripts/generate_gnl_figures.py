@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+import re
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
@@ -30,19 +31,32 @@ def load_and_parse_results(results_dir: Path) -> pd.DataFrame:
     if not json_files:
         raise FileNotFoundError(f"No '*_results.json' files found in {results_dir}")
 
+    k_suffix_re = re.compile(r"_(\d+)$", re.IGNORECASE)
+
     for file_path in json_files:
         try:
             with open(file_path, 'r') as f:
                 data = json.load(f)
-            # Ensure essential keys exist before processing
             if all(k in data for k in ['params', 'final_error_count', 'duration', 'error_history']):
-                record = data['params']
+                record = dict(data['params'])  # copy to avoid mutating original
                 record['final_error_count'] = data['final_error_count']
                 record['duration'] = data['duration']
                 record['error_history'] = data['error_history']
+
+                # NEW: parse K from track like 'G&L-SB_50' (default 1 if absent)
+                track_str = record.get('track', '') or ''
+                m = k_suffix_re.search(track_str)
+                record['K'] = int(m.group(1)) if m else 1
+
+                # NEW: infer reset policy from filename suffix '*_reset_results.json'
+                record['reset_weights'] = file_path.stem.endswith('_reset_results')
+
+                # optional (can help debug)
+                record['file_name'] = file_path.name
+
                 records.append(record)
             else:
-                 print(f"Warning: Skipping incomplete file {file_path.name}")
+                print(f"Warning: Skipping incomplete file {file_path.name}")
         except (json.JSONDecodeError, KeyError) as e:
             print(f"Warning: Skipping corrupted file {file_path.name}: {e}")
             continue
@@ -59,7 +73,23 @@ def load_and_parse_results(results_dir: Path) -> pd.DataFrame:
     df['track_label'] = df['track'].str.replace('G&L-', '').str.replace(r'_(\d+)', '', regex=True)
     df['variant'] = df['model'].apply(lambda x: 'Least Confident' if '_least' in x else 'Standard')
 
+    # NEW: stable per-run id for exploding histories
+    id_cols = ['dataset', 'model', 'strategy', 'track', 'seed', 'subset', 'reset_weights']
+    # some files may miss 'subset'; ensure it exists
+    if 'subset' not in df.columns:
+        df['subset'] = np.nan
+    df['run_id'] = df[id_cols].astype(str).agg('|'.join, axis=1)
+
     return df
+
+
+
+def _explode_histories(df: pd.DataFrame, y_col_name="Cumulative Errors") -> pd.DataFrame:
+    """Explode error histories and attach a per-run step index."""
+    out = df.explode("error_history").rename(columns={"error_history": y_col_name}).copy()
+    out[y_col_name] = pd.to_numeric(out[y_col_name])
+    out["Labeled Samples"] = out.groupby("run_id").cumcount()
+    return out
 
 # --------------------------------------------------------------------
 # 2. Figure Generation Functions (Corrected Plotting Logic)
@@ -238,21 +268,38 @@ def generate_figure_ag_news(df: pd.DataFrame, output_dir: Path):
     plt.style.use('seaborn-v0_8-whitegrid')
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    sns.lineplot(
-        data=df_plot,
-        x='Labeled Samples',
-        y='Cumulative Error Count',
-        hue='plot_label',
-        palette='magma',
-        ax=ax,
-        errorbar='sd',
-        linewidth=2.5
-    )
+    labels = df_plot['plot_label'].dropna().unique()
+    if len(labels) > 1:
+        sns.lineplot(
+            data=df_plot,
+            x='Labeled Samples',
+            y='Cumulative Error Count',
+            hue='plot_label',
+            palette='magma',
+            ax=ax,
+            errorbar='sd',
+            linewidth=2.5
+        )
+        ax.legend(title='Model (Track)')
+    else:
+        # Single series: no hue/palette, no legend
+        sns.lineplot(
+            data=df_plot,
+            x='Labeled Samples',
+            y='Cumulative Error Count',
+            ax=ax,
+            errorbar='sd',
+            linewidth=2.5
+        )
+        # Remove any empty legend stub if present
+        leg = ax.get_legend()
+        if leg is not None:
+            leg.remove()
+
 
     ax.set_title('Figure 3: Early-Stage Adaptability on AG News (n=300)', fontsize=16)
     ax.set_xlabel('Labeled Samples', fontsize=12)
     ax.set_ylabel('Cumulative Error Count', fontsize=12)
-    ax.legend(title='Model (Track)')
     ax.set_xlim(0, 300)
     ax.set_ylim(0)
 
@@ -285,26 +332,134 @@ def generate_figure_mnist_adaptability(df: pd.DataFrame, output_dir: Path):
     plt.style.use('seaborn-v0_8-whitegrid')
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    sns.lineplot(
-        data=df_plot,
-        x='Labeled Samples',
-        y='Cumulative Error Count',
-        hue='plot_label',
-        palette='magma',
-        ax=ax,
-        errorbar='sd',
-        linewidth=2.5
-    )
+    labels = df_plot['plot_label'].dropna().unique()
+    if len(labels) > 1:
+        sns.lineplot(
+            data=df_plot,
+            x='Labeled Samples',
+            y='Cumulative Error Count',
+            hue='plot_label',
+            palette='magma',
+            ax=ax,
+            errorbar='sd',
+            linewidth=2.5
+        )
+        ax.legend(title='Model (Track)')
+    else:
+        sns.lineplot(
+            data=df_plot,
+            x='Labeled Samples',
+            y='Cumulative Error Count',
+            ax=ax,
+            errorbar='sd',
+            linewidth=2.5
+        )
+        leg = ax.get_legend()
+        if leg is not None:
+            leg.remove()
+
 
     ax.set_title('Figure 4: Early-Stage Adaptability on MNIST (n=300)', fontsize=16)
     ax.set_xlabel('Labeled Samples', fontsize=12)
     ax.set_ylabel('Cumulative Error Count', fontsize=12)
-    ax.legend(title='Model (Track)')
     ax.set_xlim(0, 300)
     ax.set_ylim(0)
 
     plt.tight_layout()
     plt.savefig(fig_path, dpi=300)
+    plt.close(fig)
+    print(f"✅ Saved: {fig_path}")
+
+
+def generate_figure_ablation_k_and_reset(df: pd.DataFrame, output_dir: Path):
+    """
+    Appendix D: Two-panel ablation
+      (Left)  MNIST, CNN, SB, entropy, n=300 — K ∈ {10, 50, 200}
+      (Right) AG News, BERT-base, PB_50, entropy, n=300 — reset_weights ∈ {False, True}
+    """
+    fig_path = output_dir / "figure_ablation_k_and_reset.png"
+    print("Generating Appendix Ablation (figure_ablation_k_and_reset.png)...")
+
+    # ---- Left panel: K ablation (MNIST / CNN / SB / entropy / n=300) ----
+    left_df_base = df[
+        (df["dataset"] == "mnist")
+        & (df["subset"] == 300)
+        & (df["model"] == "cnn")
+        & (df["strategy"] == "entropy")
+        & (df["track"].str.contains("SB"))
+        & (df["K"].isin([10, 50, 200]))
+    ].copy()
+
+    # ---- Right panel: reset vs non-reset (AG News / BERT-base / PB_50 / entropy / n=300) ----
+    right_df_base = df[
+        (df["dataset"] == "ag_news")
+        & (df["subset"] == 300)
+        & (df["model"] == "bert-base")
+        & (df["strategy"] == "entropy")
+        & (df["track"].str.contains("PB_50"))
+    ].copy()
+
+    if left_df_base.empty and right_df_base.empty:
+        print("  ⚠️  No data for ablation; skipping.")
+        return
+
+    plt.style.use("seaborn-v0_8-whitegrid")
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6), constrained_layout=True)
+
+    # Left: K ablation
+    if not left_df_base.empty:
+        left_plot = _explode_histories(left_df_base, y_col_name="Cumulative Errors")
+        # Label each run with K
+        left_plot["label"] = "K = " + left_plot["K"].astype(str)
+        sns.lineplot(
+            data=left_plot,
+            x="Labeled Samples",
+            y="Cumulative Errors",
+            hue="label",
+            palette="magma",
+            ax=axes[0],
+            errorbar="sd",
+            linewidth=2.5,
+        )
+        axes[0].set_title("K Ablation — MNIST (CNN, SB, entropy, n=300)")
+        axes[0].set_xlabel("Labeled Samples")
+        axes[0].set_ylabel("Cumulative Errors")
+        axes[0].set_xlim(0, 300)
+        axes[0].set_ylim(0)
+        axes[0].legend(title=None)
+    else:
+        axes[0].axis("off")
+        axes[0].text(0.5, 0.5, "No MNIST K-ablation data", ha="center", va="center")
+
+    # Right: reset vs non-reset
+    if not right_df_base.empty:
+        right_plot = _explode_histories(right_df_base, y_col_name="Cumulative Errors")
+        right_plot["Reset Policy"] = right_plot["reset_weights"].map({True: "Reset between batches", False: "No reset"})
+        sns.lineplot(
+            data=right_plot,
+            x="Labeled Samples",
+            y="Cumulative Errors",
+            hue="Reset Policy",
+            palette="magma",
+            ax=axes[1],
+            errorbar="sd",
+            linewidth=2.5,
+        )
+        axes[1].set_title("Reset vs No-Reset — AG News (BERT-base, PB_50, entropy, n=300)")
+        axes[1].set_xlabel("Labeled Samples")
+        axes[1].set_ylabel("Cumulative Errors")
+        axes[1].set_xlim(0, 300)
+        axes[1].set_ylim(0)
+        axes[1].legend(title=None)
+    else:
+        axes[1].axis("off")
+        axes[1].text(0.5, 0.5, "No AG News reset ablation data", ha="center", va="center")
+
+    for ax in axes:
+        ax.grid(True, alpha=0.3)
+        ax.tick_params(labelsize=11)
+
+    plt.savefig(fig_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"✅ Saved: {fig_path}")
 
@@ -330,6 +485,7 @@ def main():
         generate_figure_cost_performance(all_records, args.output_dir)
         generate_figure_ag_news(all_records, args.output_dir)
         generate_figure_mnist_adaptability(all_records, args.output_dir)
+        generate_figure_ablation_k_and_reset(all_records, args.output_dir)
 
         print("\n🎉 All figures generated successfully!")
 
