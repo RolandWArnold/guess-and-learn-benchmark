@@ -1,128 +1,177 @@
-# Guess-and-Learn: A Diagnostic Benchmark for Zero-Shot Error Efficiency
+# Guess-and-Learn (G&L)
+**Benchmarking early-phase adaptation by cumulative error**
 
-This repository contains the official reference implementation for the paper "Guess-and-Learn: A Diagnostic Benchmark for Zero-Shot Error Efficiency".
+G&L evaluates how quickly a model becomes useful in a **cold-start** setting. The learner
+must predict a label for an unlabeled instance, receive the ground truth, update its
+parameters, and repeat. The primary metric is the **cumulative number of mistakes**
+over the sequence (the **error trajectory**). This exposes adaptation speed and the
+effects of selection and training policies—information that final accuracy alone does not show.
 
-## Overview
+---
 
-**Guess-and-Learn (G&L)** is a diagnostic protocol for measuring a learning algorithm's cold-start error efficiency. It quantifies the cumulative number of prediction mistakes a model makes while sequentially labeling an entire unlabeled dataset, starting from zero in-domain labeled examples.
+## 1. Overview
+- **Protocol:** Sequential pool labelling: _select → predict → reveal label → update_.
+- **Metric:** Cumulative errors vs. number of labeled samples.
+- **Tracks:** Cross of initialization (**Scratch** vs **Pretrained**) and update schedule
+  (**Online** vs **Batch**).
+- **Scope:** Vision (MNIST, Fashion‑MNIST, CIFAR‑10, SVHN) and Text (AG News).
+- **Goal:** Reproducible comparison of models and strategies in the early phase.
 
-At each step, the protocol is as follows:
-1. **Select**: The model uses an acquisition strategy to select an unlabeled point from a pool.
-2. **Guess**: The model predicts the label for the selected point.
-3. **Oracle**: The ground-truth label is revealed.
-4. **Update Error**: The cumulative error count is incremented if the guess was incorrect.
-5. **Update State**: The model updates its internal state using the newly acquired label, according to the rules of the specific track.
+---
 
-The resulting cumulative error trajectory serves as a transparent measure of a model's inductive bias, adaptation speed, and sample-selection strategy quality. This benchmark complements classic metrics like accuracy and label-efficiency by focusing on the "cost of learning" in terms of errors, which is critical in high-stakes or interactive settings.
+## 2. Protocol (concise)
+At each step _t_:
+1) Select an unlabeled instance from the pool (by a strategy).
+2) Predict its label.
+3) Obtain the true label from the oracle.
+4) Update model parameters (per‑sample _Online_ or every _K_ samples in _Batch_).
 
-The benchmark is organized into four tracks to disentangle the influence of inductive bias, representation learning, and feature transfer:
-* **G&L-SO (Scratch-Online)**: Train from scratch with online (single-example) updates.
-* **G&L-SB (Scratch-Batch)**: Train from scratch with batch updates every *K* samples.
-* **G&L-PO (Pretrained-Online)**: Fine-tune a pretrained model with online updates (typically on the classifier head only).
-* **G&L-PB (Pretrained-Batch)**: Fine-tune a pretrained model with batch updates every *K* samples.
+**No abstention:** every instance must be predicted.
+**Primary output:** the error trajectory and its final value.
 
-## 1. Installation and Setup
+---
 
-### Clone the Repository
+## 3. Tracks
+Four tracks isolate the effects of prior knowledge and update cadence:
+
+- **G&L–SO (Scratch–Online):** random initialization; update **after every sample**.
+- **G&L–SB_K (Scratch–Batch):** random initialization; **batch** update every **K>1** samples.
+- **G&L–PO (Pretrained–Online):** start from pretrained weights; update **after every sample**.
+- **G&L–PB_K (Pretrained–Batch):** pretrained; **batch** update every **K>1** samples.
+
+**Naming:** `...-SB_50` and `...-PB_50` denote `K=50`. If no suffix is present, `K=1` (online).
+
+The driver enforces sensible pairings (scratch models on scratch tracks; pretrained models on
+pretrained tracks).
+
+---
+
+## 4. Models & Datasets
+Supported combinations:
+
+### Vision datasets (MNIST, Fashion‑MNIST, CIFAR‑10, SVHN)
+- **Scratch:** `knn`, `perceptron`, `cnn`
+- **Pretrained:** `resnet50`, `vit-b-16`
+  (ViT maps to `google/vit-base-patch16-224-in21k`; ResNet uses ImageNet weights.)
+
+### Text dataset (AG News)
+- **Scratch:** `text-knn` (k‑NN on TF‑IDF), `text-perceptron` (linear on TF‑IDF)
+- **Pretrained:** `bert-base` (maps to `bert-base-uncased`)
+
+Vision inputs are normalized for pretrained models (resize to 224×224 if needed, grayscale
+expanded to 3 channels). Text models use TF‑IDF (scratch) or the BERT tokenizer (pretrained).
+
+---
+
+## 5. Acquisition strategies
+- **random** — uniform sampling (baseline)
+- **confidence** — highest max class probability (easy‑first)
+- **least_confidence** — lowest max class probability (uncertainty‑first)
+- **margin** — smallest (top‑1 − top‑2) probability gap
+- **entropy** — highest predictive entropy
+
+These strategies shape which examples are seen early, affecting the error trajectory.
+
+---
+
+## 6. Installation
+Prefer **requirements.txt** for a consistent install (handles pinned packages and the
+appropriate PyTorch wheel). As an alternative, **Pipenv** files (Pipfile and Pipfile.lock) are
+provided.
+
+### 6.1. Using requirements.txt (preferred)
 ```bash
-git clone https://github.com/RolandWArnold/guess-and-learn.git
-cd guess-and-learn
-```
-
-### Install Dependencies
-
-```bash
+python -m venv .venv
+source .venv/bin/activate    # Windows: .venv\Scripts\activate
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
+> **Note on PyTorch wheels:** If you install manually, ensure you use the correct
+> CUDA/CPU/MPS build and, if needed, the PyTorch extra index URL. Using
+> `requirements.txt` avoids most of that friction.
 
-### Prepare Caches (Recommended)
-
-To run experiments fully offline and ensure reproducibility, you can pre-download all required datasets (e.g., MNIST, CIFAR-10, AG News) and pretrained model weights (e.g., ViT, BERT, ResNet-50).
-
+### 6.2. Using Pipenv (alternative)
+Use the lockfile for a reproducible environment:
 ```bash
-python scripts/prepare_cache.py
+pip install --upgrade pip pipenv
+pipenv sync               # create from Pipfile.lock
+pipenv shell              # activate
+```
+If you prefer to resolve from Pipfile:
+```bash
+pipenv install
+pipenv shell
 ```
 
-This script will populate a local cache, which is essential for environments without network access.
+---
 
-## 2. Running Experiments
+## 7. Running experiments
+Entry point: `src/run_all.py`.
 
-The main entry point for running experiments is the `run_all.py` script. It allows you to define a grid of experiments and leverages multiprocessing to execute them in parallel.
-
-### Running a Single Experiment
-
-You can run a single experiment by specifying one option for each dimension (dataset, model, strategy, track, and seed).
-
-**Example: Run Perceptron on MNIST (G&L-SO track) with the Random strategy.**
-
+### 7.1. Full default grid
 ```bash
-./run_all.py \
-    --datasets mnist \
-    --models perceptron \
-    --strategies random \
-    --tracks "G&L-SO" \
-    --seeds 1 \
-    --workers 1
+python src/run_all.py --all
+```
+Runs default datasets, models, strategies, and tracks with seeds `[0,1,2]` and saves to `./results`.
+
+### 7.2. Selective runs
+```bash
+python src/run_all.py   --datasets mnist,ag_news   --models perceptron,cnn,bert-base   --strategies random,entropy   --tracks G&L-SO,G&L-SB_50,G&L-PB_50   --seeds 0 1 2   --output_dir results/exp1
 ```
 
-### Running an Experiment Grid
+### 7.3. Useful flags (summary)
+- `--datasets / --models / --strategies / --tracks` — comma‑separated lists
+- `--seeds` — one or more ints (e.g., `--seeds 0 1 2`)
+- `--devices` — default: `cuda` if available; else `mps` (Apple); else `cpu`
+- `--workers` — parallel processes (default: up to 8)
+- `--output_dir` — results folder (default: `results`)
+- `--subset N` — cap pool size globally (e.g., 300)
+- `--subset_map "mnist:1000,ag_news:2000"` — per‑dataset caps
+- `--reset-weights` — for batch tracks, reinit weights before each batch update
+- `--shard k n` — run only shard `k` of `n` across the grid
 
-The script's power comes from its ability to launch a grid of experiments. You can provide comma-separated lists of values.
+**Idempotent skipping:** the plot image is treated as the final artifact. If it exists and is
+valid, the run is skipped. With `RESULTS_S3_PREFIX` set (see below), the same applies to S3.
 
-**Example: Run a 3-layer CNN and ViT-B/16 on CIFAR-10, using two different strategies and three seeds.**
-The batch size `K` is automatically parsed from the track name (e.g., `G&L-PB_50` sets K=50).
+---
 
+## 8. Outputs
+For each configuration `{dataset}_{model}_{strategy}_{track}_seed{S}[_s{subset}]`:
+- `*_results.json` — error trajectory, final metrics, params, labeled indices, per‑step
+  error flags, duration, and RNG states.
+- `*_plot.png` — cumulative errors vs. labeled samples (with final error annotation).
+- `*_labels.pt` — tensor of ground‑truth labels for the pool.
+- `*_features.pt` — learned features if the model implements `extract_features`;
+  otherwise flattened raw features for tensor vision data; text models log when not applicable.
+
+These artifacts are sufficient for post‑hoc analysis and plotting without rerunning training.
+
+---
+
+## 9. Reproducibility and settings
+- **Seeding:** Python, NumPy, and PyTorch are seeded per run; seeds appear in filenames
+  and JSON.
+- **Determinism:** deterministic algorithms are requested where available; cuDNN
+  benchmarking is disabled to reduce nondeterminism.
+- **Device selection:** default is `cuda` → `mps` → `cpu`, or override via `--devices`.
+- **File identity:** filenames encode dataset/model/strategy/track/seed/subset.
+
+---
+
+## 10. Optional S3 cache
+Set an S3 prefix to enable remote caching of finished artifacts:
 ```bash
-./run_all.py \
-    --datasets cifar10 \
-    --models cnn,vit-b-16 \
-    --strategies entropy,margin \
-    --tracks "G&L-SB_50,G&L-PB_50" \
-    --subset 300 \
-    --seeds 1 2 3 \
-    --workers 8
+export RESULTS_S3_PREFIX=s3://my-bucket/gnl-runs
 ```
+If enabled, completed results are uploaded, and future runs will download/verify and skip
+matching experiments.
 
-### Key Arguments
+---
 
-* `--datasets`: Comma-separated list of datasets (e.g., `mnist,cifar10,ag_news`).
-* `--models`: Comma-separated list of models (e.g., `cnn,vit-b-16,bert-base`). The script automatically filters for valid model/dataset pairs (e.g., BERT runs only on AG News).
-* `--strategies`: Comma-separated list of acquisition strategies (e.g., `random,entropy,least_confidence`).
-* `--tracks`: Comma-separated list of G&L tracks (e.g., `"G&L-SO,G&L-SB_50"`).
-* `--seeds`: Space-separated list of random seeds for reproducibility (e.g., `1 2 3 4 5`).
-* `--subset`: Restrict the dataset to a smaller random subset of a given size (e.g., `300`). This is useful for rapid testing.
-* `--reset-weights`: A special flag for batch tracks that re-initializes model weights from scratch before each batch update. This helps isolate pure sample-efficiency.
-* `--workers`: Number of parallel processes to use.
-* `--output_dir`: Directory to save results (defaults to `./results`).
+## 11. White paper
+This repository implements the methodology described in the paper:
 
-## 3. Visualizing and Analyzing Results
+> **“Guess‑and‑Learn (G&L): Measuring the Cumulative Error Cost of Cold‑Start Adaptation.”**
 
-### Per-Run Plots
-
-For each experiment, a plot of the cumulative error curve is automatically saved in the output directory (e.g., `./results/mnist_cnn_entropy_G&L-SB_50_seed1_plot.png`).
-
-### Aggregate Plots
-
-To aggregate results from multiple seeds and generate the comparative plots shown in the paper (with mean and standard deviation bands), use the provided Jupyter notebook.
-
-1. Launch Jupyter Lab or Jupyter Notebook:
-   ```bash
-   jupyter lab
-   ```
-2. Open `notebooks/visualize_results.ipynb` and run the cells. The notebook automatically finds result files, groups them by experiment configuration, and generates the final plots.
-
-### Check Benchmark Completeness
-
-To verify if you have run all experiments for a complete benchmark (e.g., for the `s300` subset across 5 seeds), you can use the `check_completeness.py` script. It will report any missing runs and generate the precise `run_all.py` commands needed to complete them.
-
-```bash
-python scripts/check_completeness.py ./results --subset 300
-```
-
-## 4. Extending the Framework
-
-The framework is designed to be modular and easy to extend.
-
-* **Add a new dataset**: Add a new case to `get_dataset` and `get_data_for_protocol` in `guess_and_learn/datasets.py`.
-* **Add a new model**: Create a new class inheriting from `GnlModel` in `guess_and_learn/models.py` and add it to the `get_model` factory function.
-* **Add a new acquisition strategy**: Create a new class inheriting from `AcquisitionStrategy` in `guess_and_learn/strategies.py` and add it to the `get_strategy` factory function.
+A public link will be added once available. The paper motivates cumulative‑error evaluation,
+defines the four tracks, and analyzes empirical results relevant to early‑phase learning.
