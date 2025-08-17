@@ -9,6 +9,7 @@ V5 - Fixes the x-axis plotting logic for line graphs.
 
 import argparse
 import json
+from typing import Optional
 import warnings
 from pathlib import Path
 
@@ -19,6 +20,22 @@ import seaborn as sns
 import re
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
+
+STRATEGY_CANON = {
+    "random": "random",
+    "confidence": "confidence",
+    "least-confidence": "least_confidence",
+    "least_confidence": "least_confidence",
+    "margin": "margin",
+    "entropy": "entropy",
+}
+STRATEGY_LABEL = {
+    "random": "Random",
+    "confidence": "Confidence",
+    "least_confidence": "Least-Conf.",
+    "margin": "Margin",
+    "entropy": "Entropy",
+}
 
 # --------------------------------------------------------------------
 # 1. Data Loading and Parsing
@@ -62,6 +79,18 @@ def load_and_parse_results(results_dir: Path) -> pd.DataFrame:
             continue
 
     df = pd.DataFrame(records)
+    df["strategy"] = (
+        df["strategy"]
+            .astype(str)
+            .str.lower()
+            .str.replace("-", "_", regex=False)
+            .map(STRATEGY_CANON)
+            .fillna(df["strategy"].astype(str).str.lower().str.replace("-", "_", regex=False))
+    )
+    df["strategy_label"] = df["strategy"].map(STRATEGY_LABEL).fillna(df["strategy"])
+    if "subset" not in df.columns:
+        df["subset"] = np.nan
+    df["subset"] = pd.to_numeric(df["subset"], errors="coerce")
 
     # Clean up model and track names for better plotting
     df['model_label'] = df['model'].replace({
@@ -83,13 +112,13 @@ def load_and_parse_results(results_dir: Path) -> pd.DataFrame:
     return df
 
 
-
-def _explode_histories(df: pd.DataFrame, y_col_name="Cumulative Errors") -> pd.DataFrame:
-    """Explode error histories and attach a per-run step index."""
-    out = df.explode("error_history").rename(columns={"error_history": y_col_name}).copy()
-    out[y_col_name] = pd.to_numeric(out[y_col_name])
-    out["Labeled Samples"] = out.groupby("run_id").cumcount()
-    return out
+def _explode_histories(df: pd.DataFrame, y_col_name: str) -> pd.DataFrame:
+    df = df.copy()
+    df = df.explode("error_history")
+    df[y_col_name] = pd.to_numeric(df["error_history"])
+    df = df.drop(columns=["error_history"])
+    df["Labeled Samples"] = df.groupby("run_id").cumcount()
+    return df
 
 # --------------------------------------------------------------------
 # 2. Figure Generation Functions (Corrected Plotting Logic)
@@ -111,9 +140,8 @@ def generate_figure_mnist_curves(df: pd.DataFrame, output_dir: Path):
         )
     ].copy()
 
-    df_plot = df_fig1_base.explode('error_history').rename(columns={'error_history': 'Cumulative Errors'})
-    df_plot['Cumulative Errors'] = pd.to_numeric(df_plot['Cumulative Errors'])
-    df_plot['Labeled Samples'] = df_plot.groupby(level=0).cumcount()
+    df_plot = _explode_histories(df_fig1_base, y_col_name="Cumulative Errors")
+
     df_plot['plot_label'] = df_plot['model_label'] + ' (' + df_plot['track_label'] + ')'
 
     plt.style.use('seaborn-v0_8-whitegrid')
@@ -158,93 +186,129 @@ def generate_figure_mnist_curves(df: pd.DataFrame, output_dir: Path):
 
 
 def generate_figure_cost_performance(df: pd.DataFrame, output_dir: Path):
-    """Generates Figure 2: Cost-Performance Trade-off for n=300 experiments."""
-    fig_path = output_dir / "figure_cost_performance.png"
-    print("Generating Figure 2 (figure_cost_performance.png)...")
+    fig_path = output_dir / "figure_cost_performance_split.png"
+    print("Generating Figure (figure_cost_performance_split.png)...")
 
-    df_fig2 = df[df['subset'] == 300].copy()
+    df_fig = df[df["subset"] == 300].copy()
 
-    agg_df = df_fig2.groupby(['dataset', 'model_label', 'variant', 'strategy', 'track']).agg(
-        mean_error=('final_error_count', 'mean'),
-        mean_duration=('duration', 'mean')
-    ).reset_index()
+    # OPTIONAL: restrict to a single strategy to normalize comparisons
+    # df_fig = df_fig[df_fig["strategy"] == "random"]
 
-    # Clean up dataset names
-    agg_df['dataset_clean'] = agg_df['dataset'].replace({
-        'mnist': 'MNIST',
-        'ag_news': 'AG News',
-        'fashion_mnist': 'Fashion-MNIST'
-    })
+    agg = (
+        df_fig.groupby(["dataset", "model_label", "variant", "strategy", "track"])
+        .agg(mean_error=("final_error_count", "mean"),
+             mean_duration=("duration", "mean"))
+        .reset_index()
+    )
 
-    plt.style.use('seaborn-v0_8-whitegrid')
-    fig, ax = plt.subplots(figsize=(14, 8))
+    # Keep only the four canonical tracks we actually plot
+    track_cols = ["G&L-SO", "G&L-SB_50", "G&L-PO", "G&L-PB_50"]
+    agg = agg[agg["track"].isin(track_cols)].copy()
 
-    # Define distinct markers for datasets
-    markers = {'MNIST': 'o', 'AG News': 's', 'Fashion-MNIST': '^'}
-
-    # Define colors for models
-    model_colors = {
-        'BERT-base': '#1f77b4',
-        'Text Perceptron': '#ff7f0e',
-        'Text k-NN': '#2ca02c',
-        'CNN': '#d62728',
-        'Perceptron': '#9467bd',
-        'ViT-B-16': '#8c564b',
-        'ResNet50': '#e377c2',
-        'k-NN': '#7f7f7f'
+    dataset_labels = {
+        "mnist": "MNIST",
+        "ag_news": "AG News",
+        "fashion_mnist": "Fashion-MNIST",
     }
 
-    # Plot each combination manually to ensure proper legend
-    for dataset in agg_df['dataset_clean'].unique():
-        for model in agg_df['model_label'].unique():
-            subset = agg_df[(agg_df['dataset_clean'] == dataset) & (agg_df['model_label'] == model)]
-            if not subset.empty:
-                ax.scatter(
-                    subset['mean_duration'],
-                    subset['mean_error'],
-                    marker=markers[dataset],
-                    color=model_colors.get(model, '#000000'),
-                    s=120,
-                    edgecolor='black',
-                    linewidth=0.5,
-                    alpha=0.8
-                )
+    col_titles = {
+        "G&L-SO": "SO",
+        "G&L-SB_50": "SB_50",
+        "G&L-PO": "PO",
+        "G&L-PB_50": "PB_50",
+    }
 
-    ax.set_title('Cost-Performance Trade-off (n=300 Subset)', fontsize=18, fontweight='bold', pad=20)
-    ax.set_xlabel('Mean Wall-Clock Time (seconds)', fontsize=14, fontweight='bold')
-    ax.set_ylabel('Mean Final Error Count', fontsize=14, fontweight='bold')
-    ax.set_xscale('log')
+    # Consistent model palette
+    model_colors = {
+        "BERT-base": "#1f77b4",
+        "Text Perceptron": "#ff7f0e",
+        "Text k-NN": "#2ca02c",
+        "CNN": "#d62728",
+        "Perceptron": "#9467bd",
+        "ViT-B-16": "#8c564b",
+        "ResNet50": "#e377c2",
+        "k-NN": "#7f7f7f",
+    }
 
-    # Create custom legends
-    model_legend_elements = [plt.Line2D([0], [0], marker='o', color='w',
-                                       markerfacecolor=model_colors.get(model, '#000000'),
-                                       markersize=8, label=model, markeredgecolor='black')
-                           for model in sorted(agg_df['model_label'].unique())]
+    # Which datasets do we have?
+    datasets_present = [d for d in ["mnist", "ag_news"] if d in agg["dataset"].unique()]
+    n_rows = len(datasets_present)
+    if n_rows == 0:
+        print("⚠️ No datasets found for n=300.")
+        return
 
-    dataset_legend_elements = [plt.Line2D([0], [0], marker=markers[dataset], color='w',
-                                         markerfacecolor='gray', markersize=8,
-                                         label=dataset, markeredgecolor='black')
-                             for dataset in sorted(agg_df['dataset_clean'].unique())]
+    # Build n_rows × 4 grid (one column per track)
+    import math
+    plt.style.use("seaborn-v0_8-whitegrid")
+    fig, axes = plt.subplots(
+        n_rows, 4, figsize=(18, 4.2 * n_rows), sharey=True, constrained_layout=True
+    )
+    if n_rows == 1:
+        axes = np.array([axes])  # ensure 2D indexing
 
-    # Position legends side by side outside the plot
-    legend1 = ax.legend(handles=model_legend_elements, title='Model',
-                       bbox_to_anchor=(1.02, 1), loc='upper left',
-                       title_fontsize=12, fontsize=10)
-    legend2 = ax.legend(handles=dataset_legend_elements, title='Dataset',
-                       bbox_to_anchor=(1.02, 0.6), loc='upper left',
-                       title_fontsize=12, fontsize=10)
-    ax.add_artist(legend1)  # Keep both legends
+    def plot_panel(ax, ds_key: str, track_key: str):
+        sub = agg[(agg["dataset"] == ds_key) & (agg["track"] == track_key)].copy()
+        if sub.empty:
+            ax.axis("off")
+            ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            return
 
-    ax.grid(True, alpha=0.3)
-    ax.tick_params(labelsize=11)
+        # One point per (model, variant, strategy) because track is fixed in this panel
+        for model in sorted(sub["model_label"].unique()):
+            m = sub[sub["model_label"] == model]
+            ax.scatter(
+                m["mean_duration"],
+                m["mean_error"],
+                s=110,
+                color=model_colors.get(model, "#000000"),
+                edgecolor="black",
+                linewidth=0.5,
+                alpha=0.9,
+                label=model,
+            )
+        ax.set_xscale("log")
+        ax.grid(True, alpha=0.3)
 
-    plt.tight_layout()
-    plt.savefig(fig_path, dpi=300, bbox_inches='tight', bbox_extra_artists=[legend1, legend2])
+    # Fill grid
+    for r, ds in enumerate(datasets_present):
+        for c, track_key in enumerate(track_cols):
+            ax = axes[r, c]
+            plot_panel(ax, ds, track_key)
+            title = f"{dataset_labels.get(ds, ds)} — {col_titles[track_key]}"
+            ax.set_title(title, fontsize=13, fontweight="bold")
+
+    # Axis labels
+    for r in range(n_rows):
+        axes[r, 0].set_ylabel("Mean Final Error Count", fontsize=12)
+    for c in range(4):
+        axes[n_rows - 1, c].set_xlabel("Mean Wall-Clock Time (s)", fontsize=12)
+
+    # Shared legend: collect unique model handles
+    handles, labels = [], []
+    for r in range(n_rows):
+        for c in range(4):
+            h, l = axes[r, c].get_legend_handles_labels()
+            handles += h
+            labels += l
+    seen = set()
+    uniq = [(h, l) for h, l in zip(handles, labels) if (l not in seen and not seen.add(l))]
+    if uniq:
+        fig.legend(
+            handles=[h for h, _ in uniq],
+            labels=[l for _, l in uniq],
+            title="Model",
+            bbox_to_anchor=(1.005, 1),
+            loc="upper left",
+            fontsize=10,
+            title_fontsize=11,
+        )
+
+    plt.savefig(fig_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"✅ Saved: {fig_path}")
 
 
-def generate_figure_ag_news(df: pd.DataFrame, output_dir: Path):
+def generate_figure_ag_news_adaptability(df: pd.DataFrame, output_dir: Path):
     """Early-Stage Adaptability on AG News (n=300)."""
     fig_path = output_dir / "figure_early_stage_adaptability_ag_news.png"
     print("Generating Figure 3: Early Adaptability on AG News (n=300)...")
@@ -260,9 +324,7 @@ def generate_figure_ag_news(df: pd.DataFrame, output_dir: Path):
         )
     ].copy()
 
-    df_plot = df_fig3_base.explode('error_history').rename(columns={'error_history': 'Cumulative Error Count'})
-    df_plot['Cumulative Error Count'] = pd.to_numeric(df_plot['Cumulative Error Count'])
-    df_plot['Labeled Samples'] = df_plot.groupby(level=0).cumcount()
+    df_plot = _explode_histories(df_fig3_base, y_col_name="Cumulative Errors")
     df_plot['plot_label'] = df_plot['model_label'] + ' (' + df_plot['track_label'] + ')'
 
     plt.style.use('seaborn-v0_8-whitegrid')
@@ -273,7 +335,7 @@ def generate_figure_ag_news(df: pd.DataFrame, output_dir: Path):
         sns.lineplot(
             data=df_plot,
             x='Labeled Samples',
-            y='Cumulative Error Count',
+            y='Cumulative Errors',
             hue='plot_label',
             palette='magma',
             ax=ax,
@@ -286,7 +348,7 @@ def generate_figure_ag_news(df: pd.DataFrame, output_dir: Path):
         sns.lineplot(
             data=df_plot,
             x='Labeled Samples',
-            y='Cumulative Error Count',
+            y='Cumulative Errors',
             ax=ax,
             errorbar='sd',
             linewidth=2.5
@@ -297,9 +359,9 @@ def generate_figure_ag_news(df: pd.DataFrame, output_dir: Path):
             leg.remove()
 
 
-    ax.set_title('Figure 3: Early-Stage Adaptability on AG News (n=300)', fontsize=16)
+    ax.set_title('Early-Stage Adaptability on AG News (n=300)', fontsize=16)
     ax.set_xlabel('Labeled Samples', fontsize=12)
-    ax.set_ylabel('Cumulative Error Count', fontsize=12)
+    ax.set_ylabel('Cumulative Errors', fontsize=12)
     ax.set_xlim(0, 300)
     ax.set_ylim(0)
 
@@ -324,9 +386,7 @@ def generate_figure_mnist_adaptability(df: pd.DataFrame, output_dir: Path):
         )
     ].copy()
 
-    df_plot = df_fig4_base.explode('error_history').rename(columns={'error_history': 'Cumulative Error Count'})
-    df_plot['Cumulative Error Count'] = pd.to_numeric(df_plot['Cumulative Error Count'])
-    df_plot['Labeled Samples'] = df_plot.groupby(level=0).cumcount()
+    df_plot = _explode_histories(df_fig4_base, y_col_name="Cumulative Errors")
     df_plot['plot_label'] = df_plot['model_label'] + ' (' + df_plot['track_label'] + ')'
 
     plt.style.use('seaborn-v0_8-whitegrid')
@@ -337,7 +397,7 @@ def generate_figure_mnist_adaptability(df: pd.DataFrame, output_dir: Path):
         sns.lineplot(
             data=df_plot,
             x='Labeled Samples',
-            y='Cumulative Error Count',
+            y='Cumulative Errors',
             hue='plot_label',
             palette='magma',
             ax=ax,
@@ -349,7 +409,7 @@ def generate_figure_mnist_adaptability(df: pd.DataFrame, output_dir: Path):
         sns.lineplot(
             data=df_plot,
             x='Labeled Samples',
-            y='Cumulative Error Count',
+            y='Cumulative Errors',
             ax=ax,
             errorbar='sd',
             linewidth=2.5
@@ -359,9 +419,9 @@ def generate_figure_mnist_adaptability(df: pd.DataFrame, output_dir: Path):
             leg.remove()
 
 
-    ax.set_title('Figure 4: Early-Stage Adaptability on MNIST (n=300)', fontsize=16)
+    ax.set_title('Early-Stage Adaptability on MNIST (n=300)', fontsize=16)
     ax.set_xlabel('Labeled Samples', fontsize=12)
-    ax.set_ylabel('Cumulative Error Count', fontsize=12)
+    ax.set_ylabel('Cumulative Errors', fontsize=12)
     ax.set_xlim(0, 300)
     ax.set_ylim(0)
 
@@ -411,12 +471,18 @@ def generate_figure_ablation_k_and_reset(df: pd.DataFrame, output_dir: Path):
         left_plot = _explode_histories(left_df_base, y_col_name="Cumulative Errors")
         # Label each run with K
         left_plot["label"] = "K = " + left_plot["K"].astype(str)
+
+        k_hue_order = ["K = 10", "K = 50", "K = 200"]
+        k_colors = sns.color_palette("magma", n_colors=3)
+        k_palette = dict(zip(k_hue_order, k_colors))
+
         sns.lineplot(
             data=left_plot,
             x="Labeled Samples",
             y="Cumulative Errors",
             hue="label",
-            palette="magma",
+            hue_order=k_hue_order,
+            palette=k_palette,
             ax=axes[0],
             errorbar="sd",
             linewidth=2.5,
@@ -463,6 +529,122 @@ def generate_figure_ablation_k_and_reset(df: pd.DataFrame, output_dir: Path):
     plt.close(fig)
     print(f"✅ Saved: {fig_path}")
 
+
+# --- Replacement for generate_figure_strategy_effects ---
+def generate_figure_strategy_effects(df: pd.DataFrame, output_dir: Path):
+    fig_path = output_dir / "figure_strategy_effects.png"
+    print("Generating Figure (figure_strategy_effects.png)...")
+
+    strategies = ["random", "confidence", "least_confidence", "margin", "entropy"]
+    label_order = [STRATEGY_LABEL[s] for s in strategies]
+    palette = dict(zip(label_order, sns.color_palette("magma", n_colors=len(label_order))))
+
+    base_left = df[
+        (df["dataset"] == "mnist") &
+        (df["model"] == "cnn") &
+        (df["strategy"].isin(strategies)) &
+        (df["track"] == "G&L-SO") &
+        (df["subset"] == 300)
+    ].copy()
+
+    base_right = df[
+        (df["dataset"] == "ag_news") &
+        (df["model"] == "bert-base") &
+        (df["strategy"].isin(strategies)) &
+        (df["track"] == "G&L-PO") &
+        (df["subset"] == 300)
+    ].copy()
+
+    plt.style.use("seaborn-v0_8-whitegrid")
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6), constrained_layout=True)
+
+    def _plot(ax, frame, title):
+        if frame.empty:
+            ax.axis("off")
+            ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            return
+        plot = _explode_histories(frame, y_col_name="Cumulative Errors")
+        plot["Strategy"] = plot["strategy"].map(STRATEGY_LABEL).fillna(plot["strategy"])
+        present = (plot["Strategy"].value_counts().reindex(label_order, fill_value=0))
+        print("  Strategies present:", present.to_dict())
+        sns.lineplot(
+            data=plot,
+            x="Labeled Samples",
+            y="Cumulative Errors",
+            hue="Strategy",
+            hue_order=label_order,
+            palette=palette,
+            errorbar="sd",
+            linewidth=2.5,
+            ax=ax
+        )
+        ax.set_title(title)
+        ax.set_xlim(0, 300); ax.set_ylim(0)
+        ax.set_xlabel("Labeled Samples"); ax.set_ylabel("Cumulative Errors")
+        ax.legend(title=None)
+
+    _plot(axes[0], base_left, "MNIST — CNN, SO (n=300)")
+    _plot(axes[1], base_right, "AG News — BERT-base, PO (n=300)")
+
+    plt.savefig(fig_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"✅ Saved: {fig_path}")
+
+def generate_figure_capacity_vs_agility_mnist(df: pd.DataFrame, output_dir: Path):
+    fig_path = output_dir / "figure_capacity_vs_agility_mnist.png"
+    print("Generating Figure (figure_capacity_vs_agility_mnist.png)...")
+
+    def _select(df: pd.DataFrame, models: list[str], track: str) -> pd.DataFrame:
+        return df[
+            (df["dataset"] == "mnist") &
+            (df["track"] == track) &
+            (df["subset"] == 300) &
+            (df["strategy"] == "random") &
+            (df["model"].isin(models))
+        ].copy()
+
+    low_capacity_models = ["perceptron", "knn", "cnn"]
+    high_capacity_models = ["resnet50", "vit-b-16"]
+
+    low_df = _select(df, low_capacity_models, track="G&L-SB_50")
+    high_df = _select(df, high_capacity_models, track="G&L-PB_50")
+
+    plt.style.use("seaborn-v0_8-whitegrid")
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6), constrained_layout=True)
+    magma = sns.color_palette("magma", n_colors=8)
+
+    def _plot(ax, frame, title, xmax):
+        if frame.empty:
+            ax.axis("off")
+            ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            return
+        plot = _explode_histories(frame, y_col_name="Cumulative Errors")
+        label_order = list(plot["model_label"].dropna().unique())
+        color_map = dict(zip(label_order, magma[:len(label_order)]))
+        for lbl in label_order:
+            sub = plot[plot["model_label"] == lbl]
+            sns.lineplot(
+                data=sub, x="Labeled Samples", y="Cumulative Errors",
+                label=lbl, color=color_map[lbl], ax=ax, errorbar="sd", linewidth=2.5
+            )
+        ax.set_title(title); ax.set_xlim(0, xmax); ax.set_ylim(0)
+        ax.set_xlabel("Labeled Samples"); ax.set_ylabel("Cumulative Errors")
+        ax.legend(title=None)
+
+    _plot(
+        axes[0], low_df,
+        "MNIST — G&L-SB_50 (n=300, Random)\nPerceptron, KNN, CNN", 300
+    )
+    _plot(
+        axes[1], high_df,
+        "MNIST — G&L-PB_50 (n=300, Random)\nResNet50, ViT-B-16", 300
+    )
+
+    plt.savefig(fig_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"✅ Saved: {fig_path}")
+
+
 # --------------------------------------------------------------------
 # 3. Main Execution Block
 # --------------------------------------------------------------------
@@ -483,9 +665,11 @@ def main():
 
         generate_figure_mnist_curves(all_records, args.output_dir)
         generate_figure_cost_performance(all_records, args.output_dir)
-        generate_figure_ag_news(all_records, args.output_dir)
+        generate_figure_ag_news_adaptability(all_records, args.output_dir)
         generate_figure_mnist_adaptability(all_records, args.output_dir)
         generate_figure_ablation_k_and_reset(all_records, args.output_dir)
+        generate_figure_strategy_effects(all_records, args.output_dir)
+        generate_figure_capacity_vs_agility_mnist(all_records, args.output_dir)
 
         print("\n🎉 All figures generated successfully!")
 
