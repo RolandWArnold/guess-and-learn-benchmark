@@ -19,7 +19,7 @@ effects of selection and training policies—information that final accuracy alo
 
 ---
 
-## 2. Protocol (concise)
+## 2. Protocol
 At each step _t_:
 1) Select an unlabeled instance from the pool (by a strategy).
 2) Predict its label.
@@ -49,7 +49,7 @@ pretrained tracks).
 ## 4. Models & Datasets
 Supported combinations:
 
-### Vision datasets (MNIST, Fashion‑MNIST, CIFAR‑10, SVHN)
+### Vision dataset (MNIST)
 - **Scratch:** `knn`, `perceptron`, `cnn`
 - **Pretrained:** `resnet50`, `vit-b-16`
   (ViT maps to `google/vit-base-patch16-224-in21k`; ResNet uses ImageNet weights.)
