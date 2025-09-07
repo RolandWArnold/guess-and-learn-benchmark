@@ -173,7 +173,8 @@ This repository implements the methodology described in the paper:
 
 > **“Guess‑and‑Learn (G&L): Measuring the Cumulative Error Cost of Cold‑Start Adaptation.”**
 
-📄 [Read the paper (PDF)](docs/guess-and-learn-benchmark-v1.pdf)
+- 📄 [Read the paper (PDF)](docs/guess-and-learn-benchmark-v1.pdf)
+- 📄 [Arxiv Link](https://arxiv.org/abs/2508.21270)
 
  The paper motivates cumulative‑error evaluation,
 defines the four tracks, and analyzes empirical results relevant to early‑phase learning.
