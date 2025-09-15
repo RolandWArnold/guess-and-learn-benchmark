@@ -8,6 +8,13 @@ over the sequence (the **error trajectory**). This exposes adaptation speed and 
 effects of selection and training policies—information that final accuracy alone does not show.
 
 ---
+> **Quick links:**
+> - **Release**: see the tagged snapshot for this repository’s results (v1.0.0)
+> - **Replicate**: see [docs/REPLICATE.md](docs/REPLICATE.md) for exact commands used to regenerate figures and tables from our **full runs**.
+> - **Full results table:** see [docs/RESULTS_FULL.md](docs/RESULTS_FULL.md).
+> - **Results folder**: all JSON/PNG artifacts are under `results/` in this repo.
+
+---
 
 ## 1. Overview
 - **Protocol:** Sequential pool labelling: _select → predict → reveal label → update_.
@@ -178,3 +185,26 @@ This repository implements the methodology described in the paper:
 
  The paper motivates cumulative‑error evaluation,
 defines the four tracks, and analyzes empirical results relevant to early‑phase learning.
+
+---
+
+## 12. Results snapshot (accuracy; mean ± s.e. across seeds)
+
+These are short, representative slices derived **from the full runs** in `results/` using `scripts/mk_table_from_runs.py` with `--invert` (so **accuracy = 1 − final_error_rate**). See per-row seed counts.
+
+- **Text (AG News / BERT-BASE):** [docs/README_table_agnews_bert.md](docs/README_table_agnews_bert.md)
+- **Vision (MNIST / CNN):** [docs/README_table_mnist_cnn.md](docs/README_table_mnist_cnn.md)
+
+![MNIST / perceptron / entropy / G&L-SO (seed 1, full run)](results/mnist_perceptron_entropy_G&L-SO_seed1_plot.png)
+
+---
+
+## 13. Cite
+
+If you use this repository or the benchmark, please cite:
+
+- Preprint: **Arnold, R. W. (2025)**, *Guess-and-Learn: A Benchmark for Cold-Start Adaptation*, DOI: **10.48550/arXiv.2508.21270**
+- Software: use the “Cite this repository” box (from `CITATION.cff`) in the GitHub sidebar.
+- ORCID: https://orcid.org/0009-0001-0374-4692
+
+---

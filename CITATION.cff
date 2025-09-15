@@ -1,0 +1,48 @@
+cff-version: 1.2.0
+message: "If you use this repository, please cite the preprint and, where appropriate, this software."
+title: Guess-and-Learn Benchmark
+authors:
+  - family-names: Arnold
+    given-names: Roland W.
+    orcid: "https://orcid.org/0009-0001-0374-4692"
+license: Apache-2.0
+url: "https://github.com/RolandWArnold/guess-and-learn-benchmark"
+repository-code: "https://github.com/RolandWArnold/guess-and-learn-benchmark"
+keywords:
+  - machine learning
+  - LLMs
+  - evaluation
+  - benchmark
+  - cold-start adaptation
+  - reproducibility
+identifiers:
+  - type: doi
+    value: 10.48550/arXiv.2508.21270
+  - type: url
+    value: "https://arxiv.org/abs/2508.21270"
+
+# When you tag a release (e.g., v1.0.0), update the version/date below to match.
+version: "1.0.0"
+date-released: "2025-09-15"
+
+preferred-citation:
+  type: article
+  title: "Guess-and-Learn: A Benchmark for Cold-Start Adaptation"
+  authors:
+    - family-names: Arnold
+      given-names: Roland W.
+      orcid: "https://orcid.org/0009-0001-0374-4692"
+  year: 2025
+  journal: "arXiv"
+  doi: 10.48550/arXiv.2508.21270
+
+references:
+  - type: software
+    title: "Guess-and-Learn Benchmark (software)"
+    authors:
+      - family-names: Arnold
+        given-names: Roland W.
+        orcid: "https://orcid.org/0009-0001-0374-4692"
+    version: "1.0.0"
+    url: "https://github.com/RolandWArnold/guess-and-learn-benchmark"
+    repository-code: "https://github.com/RolandWArnold/guess-and-learn-benchmark"
