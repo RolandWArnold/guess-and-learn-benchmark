@@ -13,7 +13,7 @@ echo "== AG News — BERT-BASE (PO & PB_50) =="
 
 # Subset 300 for all strategies on PO and PB_50, seeds 0..4
 run --datasets ag_news --models bert-base \
-    --strategies random confidence least_confidence margin entropy \
+    --strategies random confidence least_confidence margin entropy k_center_greedy \
     --tracks 'G&L-PO' 'G&L-PB_50' \
     --seeds 0 1 2 3 4 \
     --subset 300
@@ -36,14 +36,14 @@ echo "== AG News — text-knn & text-perceptron (SO & SB_50) =="
 
 # Subset 300 for all strategies on SO & SB_50, seeds 0..4
 run --datasets ag_news --models text-knn text-perceptron \
-    --strategies random confidence least_confidence margin entropy \
+    --strategies random confidence least_confidence margin entropy k_center_greedy \
     --tracks 'G&L-SO' 'G&L-SB_50' \
     --seeds 0 1 2 3 4 \
     --subset 300
 
 # Full runs (no subset) for text-perceptron on SO, all strategies
 run --datasets ag_news --models text-perceptron \
-    --strategies random confidence least_confidence margin entropy \
+    --strategies random confidence least_confidence margin entropy k_center_greedy \
     --tracks 'G&L-SO' \
     --seeds 0 1 2 3 4
 
@@ -57,7 +57,7 @@ echo "== MNIST — cnn (SO & SB_K where K∈{10,50,200}) =="
 
 # Subset 300 for all strategies, all K, seeds 0..4
 run --datasets mnist --models cnn \
-    --strategies random confidence least_confidence margin entropy \
+    --strategies random confidence least_confidence margin entropy k_center_greedy \
     --tracks 'G&L-SO' 'G&L-SB_10' 'G&L-SB_50' 'G&L-SB_200' \
     --seeds 0 1 2 3 4 \
     --subset 300
@@ -72,7 +72,7 @@ echo "== MNIST — knn & perceptron (SO & SB_50) =="
 
 # Subset 300 for all strategies, seeds 0..4
 run --datasets mnist --models knn perceptron \
-    --strategies random confidence least_confidence margin entropy \
+    --strategies random confidence least_confidence margin entropy k_center_greedy \
     --tracks 'G&L-SO' 'G&L-SB_50' \
     --seeds 0 1 2 3 4 \
     --subset 300
@@ -87,7 +87,7 @@ echo "== MNIST — resnet50 & vit-b-16 (PO & PB_50) =="
 
 # Subset 300 (all strategies) on PO & PB_50, seeds 0..4
 run --datasets mnist --models resnet50 vit-b-16 \
-    --strategies random confidence least_confidence margin entropy \
+    --strategies random confidence least_confidence margin entropy k_center_greedy \
     --tracks 'G&L-PO' 'G&L-PB_50' \
     --seeds 0 1 2 3 4 \
     --subset 300

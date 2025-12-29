@@ -76,6 +76,7 @@ expanded to 3 channels). Text models use TF‑IDF (scratch) or the BERT tokenize
 - **least_confidence** — lowest max class probability (uncertainty‑first)
 - **margin** — smallest (top‑1 − top‑2) probability gap
 - **entropy** — highest predictive entropy
+- **k_center_greedy** — maximizes minimum distance to labeled set (diversity sampling)
 
 These strategies shape which examples are seen early, affecting the error trajectory.
 

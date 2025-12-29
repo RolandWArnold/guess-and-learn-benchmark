@@ -13,7 +13,7 @@ from pathlib import Path
 
 # Based on the final, correct logic for the benchmark
 DATASETS = ["mnist", "ag_news"]
-STRATEGIES = ["random", "entropy", "margin", "confidence", "least_confidence"]
+STRATEGIES = ["random", "entropy", "margin", "confidence", "least_confidence", "k_center_greedy"]
 SEEDS = list(range(5))
 
 # Valid pairings for each dataset

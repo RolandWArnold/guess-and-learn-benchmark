@@ -123,7 +123,7 @@ def run_single_experiment(exp_config: ExperimentConfig):
 DEFAULT_DATASETS = ["mnist", "fashion-mnist", "cifar10", "svhn", "ag_news"]
 DEFAULT_MODELS_V = ["knn", "perceptron", "cnn", "resnet50", "vit-b-16"]
 DEFAULT_MODELS_T = ["text-knn", "text-perceptron", "bert-base"]
-DEFAULT_STRATEGIES = ["random", "confidence", "least_confidence", "margin", "entropy"]
+DEFAULT_STRATEGIES = ["random", "confidence", "least_confidence", "margin", "entropy", "k_center_greedy"]
 DEFAULT_TRACKS = ["G&L-SO", "G&L-SB_50", "G&L-PO", "G&L-PB_50"]
 
 

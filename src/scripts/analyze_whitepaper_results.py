@@ -178,7 +178,7 @@ def main():
     parser.add_argument("--output_dir", type=str, default="analysis_output", help="Directory to save generated plots and tables.")
     parser.add_argument("--datasets", nargs='+', default=None, help="Filter by datasets. Default: All.")
     parser.add_argument("--models", nargs='+', default=None, help="Filter by models. Default: All.")
-    parser.add_argument("--strategies", nargs='+', default=['entropy', 'least_confidence', 'margin', 'random', 'confidence'], help="Filter by strategies.")
+    parser.add_argument("--strategies", nargs='+', default=['entropy', 'least_confidence', 'margin', 'random', 'confidence', 'k_center_greedy'], help="Filter by strategies.")
     parser.add_argument("--tracks", nargs='+', default=None, help="Filter by tracks. Default: All.")
     parser.add_argument("--subsets", nargs='+', default=None, help="Filter by subsets. Default: All.")
 

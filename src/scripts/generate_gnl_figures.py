@@ -28,13 +28,18 @@ STRATEGY_CANON = {
     "least_confidence": "least_confidence",
     "margin": "margin",
     "entropy": "entropy",
+    "k-center-greedy": "k_center_greedy",
+    "k_center_greedy": "k_center_greedy",
 }
 STRATEGY_LABEL = {
     "random": "Random",
     "confidence": "Confidence",
+    "least-confidence": "Least-Conf.",
     "least_confidence": "Least-Conf.",
     "margin": "Margin",
     "entropy": "Entropy",
+    "k-center-greedy": "K-Center Greedy",
+    "k_center_greedy": "K-Center Greedy",
 }
 
 # --------------------------------------------------------------------
@@ -535,7 +540,7 @@ def generate_figure_strategy_effects(df: pd.DataFrame, output_dir: Path):
     fig_path = output_dir / "figure_strategy_effects.png"
     print("Generating Figure (figure_strategy_effects.png)...")
 
-    strategies = ["random", "confidence", "least_confidence", "margin", "entropy"]
+    strategies = ["random", "confidence", "least_confidence", "margin", "entropy", "k_center_greedy"]
     label_order = [STRATEGY_LABEL[s] for s in strategies]
     palette = dict(zip(label_order, sns.color_palette("magma", n_colors=len(label_order))))
 

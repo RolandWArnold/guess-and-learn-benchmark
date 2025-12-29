@@ -12,6 +12,8 @@ ACQ_NAMES = {
     "least-confidence": "least_confidence",
     "margin": "margin",
     "entropy": "entropy",
+    "k_center_greedy": "k_center_greedy",
+    "k-center-greedy": "k_center_greedy",
 }
 
 def norm_track(s: str) -> str:

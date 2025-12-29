@@ -108,14 +108,16 @@ class KnnModel(GnlModel):
         if not self.is_fitted:
             if self.num_classes is None:
                 raise ValueError("num_classes not set for cold-start prediction.")
-            return torch.randint(0, self.num_classes, (X.shape[0],), dtype=torch.long, device=self.device)
+            n_samples = len(X) if isinstance(X, list) else X.shape[0]
+            return torch.randint(0, self.num_classes, (n_samples,), dtype=torch.long, device=self.device)
         return torch.tensor(self.model.predict(self._flat(X)), dtype=torch.long, device=self.device)
 
     def predict_proba(self, X):
         if not self.is_fitted:
             if self.num_classes is None:
                 raise ValueError("num_classes not set for cold-start proba.")
-            return torch.ones(X.shape[0], self.num_classes, dtype=torch.float32, device=self.device) / self.num_classes
+            n_samples = len(X)
+            return torch.ones(n_samples, self.num_classes, dtype=torch.float32, device=self.device) / self.num_classes
         proba = self.model.predict_proba(self._flat(X))
         return torch.tensor(proba, dtype=torch.float32, device=self.device)
 
@@ -271,9 +273,9 @@ class TextPerceptronModel(GnlModel):
         self.vec = vectorizer
         self.lr = lr
         self.num_classes = num_classes
-        self.lin = nn.Linear(input_dim, num_classes, bias=True).to(device)
-        nn.init.xavier_uniform_(self.lin.weight)
-        nn.init.zeros_(self.lin.bias)
+        self.model = nn.Linear(input_dim, num_classes, bias=True).to(device)
+        nn.init.xavier_uniform_(self.model.weight)
+        nn.init.zeros_(self.model.bias)
 
     def _featurise(self, texts):
         X = self.vec.transform(texts).toarray()
@@ -281,12 +283,12 @@ class TextPerceptronModel(GnlModel):
 
     def predict(self, X):
         with torch.no_grad():
-            logits = self.lin(self._featurise(X))
+            logits = self.model(self._featurise(X))
         return torch.argmax(torch.softmax(logits, dim=1), dim=1)
 
     def predict_proba(self, X):
         with torch.no_grad():
-            logits = self.lin(self._featurise(X))
+            logits = self.model(self._featurise(X))
         return torch.softmax(logits, dim=1)
 
     def update(self, X_labeled, Y_labeled, exp_config: ExperimentConfig):
@@ -297,21 +299,21 @@ class TextPerceptronModel(GnlModel):
         X_vec = self._featurise(X_labeled)
         for x_vec, y_true in zip(X_vec, Y_labeled):
             y_true = int(y_true)
-            logits = self.lin(x_vec.unsqueeze(0))
+            logits = self.model(x_vec.unsqueeze(0))
             y_pred = int(torch.argmax(logits))
             if y_pred != y_true:
-                self.lin.weight.data[y_true] += self.lr * x_vec
-                self.lin.weight.data[y_pred] -= self.lr * x_vec
-                self.lin.bias.data[y_true] += self.lr
-                self.lin.bias.data[y_pred] -= self.lr
+                self.model.weight.data[y_true] += self.lr * x_vec
+                self.model.weight.data[y_pred] -= self.lr * x_vec
+                self.model.bias.data[y_true] += self.lr
+                self.model.bias.data[y_pred] -= self.lr
 
     def extract_features(self, X):
         X_tfidf = self.vec.transform(X).toarray()
         return torch.tensor(X_tfidf, dtype=torch.float32, device=self.device)
 
     def reset(self):
-        nn.init.xavier_uniform_(self.lin.weight)
-        nn.init.zeros_(self.lin.bias)
+        nn.init.xavier_uniform_(self.model.weight)
+        nn.init.zeros_(self.model.bias)
 
 
 class TextKnnModel(KnnModel):

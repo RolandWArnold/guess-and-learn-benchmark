@@ -61,7 +61,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run Guess-and-Learn Benchmark")
     parser.add_argument("--dataset", type=str, required=True, choices=["mnist", "fashion-mnist", "cifar10", "svhn", "ag_news"])
     parser.add_argument("--model", type=str, required=True, choices=["knn", "perceptron", "cnn", "resnet50", "vit-b-16", "bert-base"])
-    parser.add_argument("--strategy", type=str, required=True, choices=["random", "confidence", "least_confidence", "margin", "entropy"])
+    parser.add_argument("--strategy", type=str, required=True, choices=["random", "confidence", "least_confidence", "margin", "entropy", "k_center_greedy"])
     parser.add_argument("--track", type=str, required=True, choices=["G&L-SO", "G&L-PO", "G&L-SB", "G&L-PB"])
 
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")

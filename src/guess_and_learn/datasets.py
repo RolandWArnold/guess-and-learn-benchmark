@@ -12,6 +12,10 @@ import torchvision.transforms as transforms
 import datasets
 from datasets import load_dataset
 
+torchvision.datasets.MNIST.mirrors = [
+    'https://ossci-datasets.s3.amazonaws.com/mnist/',
+]
+
 # --------------------------------------------------------------------- #
 #  Shared HuggingFace cache                                             #
 # --------------------------------------------------------------------- #
