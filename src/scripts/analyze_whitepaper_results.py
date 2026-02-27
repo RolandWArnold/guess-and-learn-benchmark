@@ -94,45 +94,202 @@ def generate_summary_table(df):
     console.print(table)
     return summary
 
+
 def generate_latex_table(summary_df, output_dir):
     Path(output_dir).mkdir(exist_ok=True)
     console = Console()
     console.print("\n[bold green]📄 Generating Curated LaTeX Table for Paper...[/bold green]")
-    baseline = summary_df[summary_df['strategy'] == 'random'].set_index(['dataset', 'model', 'track', 'subset'])
-    active_strategies = summary_df[summary_df['strategy'] != 'random']
-    if active_strategies.empty:
-        print("⚠️ No active strategies found to compare against baseline. Skipping LaTeX table generation.")
-        return
-    best_active_idx = active_strategies.loc[active_strategies.groupby(['dataset', 'model', 'track', 'subset'])['final_error_mean'].idxmin()]
-    best_active = best_active_idx.set_index(['dataset', 'model', 'track', 'subset'])
-    report_df = best_active.join(baseline['final_error_mean'].rename('baseline_error_mean'))
-    initial_len = len(report_df)
-    report_df.dropna(subset=['baseline_error_mean'], inplace=True)
-    if len(report_df) < initial_len:
-        console.print(f"[yellow]⚠️ Warning: Dropped {initial_len - len(report_df)} rows from LaTeX table due to missing 'random' baselines.[/yellow]")
-    report_df['error_reduction_pct'] = ((report_df['final_error_mean'] - report_df['baseline_error_mean']) / report_df['baseline_error_mean']) * 100
-    def format_error_reduction(val):
-        if pd.isna(val): return "-"
-        if val < -5: return f"\\cellcolor{{green!20}}{val:.1f}"
-        elif val > 0: return f"\\cellcolor{{red!20}}{val:.1f}"
-        else: return f"{val:.1f}"
-    report_df[r'\% Error Reduction'] = report_df['error_reduction_pct'].apply(format_error_reduction)
-    report_df['Min Error (Best)'] = report_df.apply(lambda row: f"{row['final_error_mean']:.1f} $\\pm$ {row['final_error_std']:.1f}", axis=1)
-    final_latex_df = report_df.reset_index()[[
-        'dataset', 'model', 'track', 'strategy', 'Min Error (Best)', 'baseline_error_mean', r'\% Error Reduction'
-    ]]
-    final_latex_df.rename(columns={
-        'dataset': 'Dataset', 'model': 'Model', 'track': 'Track',
-        'strategy': 'Best Strategy', 'baseline_error_mean': 'Min Error (Random)'
-    }, inplace=True)
-    latex_string = final_latex_df.to_latex(
-        index=False, escape=False, column_format='llccrrr',
-        header=['Dataset', 'Model', 'Track', 'Best Strategy', 'Min Error (Best)', 'Min Error (Random)', r'\% Error $\downarrow$'],
-        na_rep="-"
+
+    # -------------------------
+    # Helpers: pretty printing
+    # -------------------------
+    def pretty_dataset(x: str) -> str:
+        m = {
+            "ag_news": "AG News",
+            "mnist": "MNIST",
+            "fashion-mnist": "Fashion-MNIST",
+            "fashion_mnist": "Fashion-MNIST",
+        }
+        return m.get(x, x)
+
+    def pretty_model(x: str) -> str:
+        m = {
+            "bert-base": "BERT-base",
+            "text-knn": r"Text $k$-NN",
+            "text-perceptron": "Text Perceptron",
+            "cnn": "CNN",
+            "knn": r"$k$-NN",
+            "perceptron": "Perceptron",
+            "resnet50": "ResNet-50",
+            "vit-b-16": "ViT-B/16",
+        }
+        return m.get(x, x)
+
+    def pretty_strategy(x: str) -> str:
+        m = {
+            "confidence": "Confidence",
+            "entropy": "Entropy",
+            "least_confidence": "Least Confidence",
+            "margin": "Margin",
+            "random": "Random",
+            "k_center_greedy": "K-Center Greedy",
+        }
+        return m.get(x, x)
+
+    def pretty_track(x: str) -> str:
+        # "G&L-PB_50" -> "G\\&L-PB$_{50}$"
+        import re
+        s = str(x).replace("&", r"\&")
+        s = re.sub(r"_(\d+)\b", r"$_{\1}$", s)
+        return s
+
+    def fmt_mean_pm_std(mean: float, std: float) -> str:
+        # Only add ± if std is actually present (i.e. multiple seeds)
+        if pd.isna(std) or std == 0:
+            return f"${mean:.1f}$"
+        return f"${mean:.1f} \\pm {std:.1f}$"
+
+    def fmt_delta(val: float) -> str:
+        # Negative is improvement (green), positive is degradation (red)
+        if pd.isna(val):
+            return "-"
+        if val < -5:
+            return f"\\cellcolor{{green!20}}${val:.1f}$"
+        if val > 0:
+            return f"\\cellcolor{{red!20}}${val:+.1f}$"
+        return f"${val:.1f}$"
+
+    # -------------------------
+    # Build best-vs-random table
+    # -------------------------
+    baseline = summary_df[summary_df["strategy"] == "random"].set_index(
+        ["dataset", "model", "track", "subset"]
     )
-    latex_string = latex_string.replace('\\toprule', '\\begin{table}[ht]\n\\centering\n\\caption{Comparison of the best active learning strategy against a random baseline. Error reduction is colored green for improvement and red for degradation.}\n\\label{tab:main_results}\n\\toprule')
-    latex_string = latex_string.replace('\\bottomrule', '\\bottomrule\n\\end{table}')
-    latex_path = Path(output_dir) / 'publication_table.tex'
+
+    active = summary_df[summary_df["strategy"] != "random"]
+    if active.empty:
+        console.print("⚠️ No active strategies found to compare against baseline. Skipping LaTeX table generation.")
+        return
+
+    best_active = active.loc[
+        active.groupby(["dataset", "model", "track", "subset"])["final_error_mean"].idxmin()
+    ].set_index(["dataset", "model", "track", "subset"])
+
+    report_df = best_active.join(
+        baseline[["final_error_mean", "final_error_std"]].rename(
+            columns={"final_error_mean": "baseline_error_mean", "final_error_std": "baseline_error_std"}
+        ),
+        how="left",
+    )
+
+    initial_len = len(report_df)
+    report_df.dropna(subset=["baseline_error_mean"], inplace=True)
+    if len(report_df) < initial_len:
+        console.print(
+            f"[yellow]⚠️ Dropped {initial_len - len(report_df)} rows due to missing 'random' baselines.[/yellow]"
+        )
+
+    # Match your paper’s curated subset (this is what you were doing implicitly before)
+    report_df = report_df.reset_index()
+    report_df = report_df[report_df["subset"].astype(str) == "300"].copy()
+
+    # Keep the curated rows (same structure as your original table)
+    keep = {
+        ("ag_news", "bert-base", "G&L-PB_50"),
+        ("ag_news", "text-knn", "G&L-SB_50"),
+        ("ag_news", "text-perceptron", "G&L-SO"),
+        ("mnist", "cnn", "G&L-SO"),
+        ("mnist", "knn", "G&L-SB_50"),
+        ("mnist", "perceptron", "G&L-SO"),
+        ("mnist", "resnet50", "G&L-PO"),
+        ("mnist", "vit-b-16", "G&L-PB_50"),
+    }
+    report_df = report_df[
+        report_df.apply(lambda r: (r["dataset"], r["model"], r["track"]) in keep, axis=1)
+    ].copy()
+
+    # Compute % delta vs random baseline
+    report_df["delta_pct"] = (
+        (report_df["final_error_mean"] - report_df["baseline_error_mean"]) / report_df["baseline_error_mean"]
+    ) * 100.0
+
+    # Pretty fields
+    report_df["Dataset"] = report_df["dataset"].apply(pretty_dataset)
+    report_df["Model"] = report_df["model"].apply(pretty_model)
+    report_df["Track"] = report_df["track"].apply(pretty_track)
+    report_df["Best Strategy"] = report_df["strategy"].apply(pretty_strategy)
+
+    # Formatted numeric fields:
+    # - Best: mean ± std when std exists
+    # - Random: mean ± std when std exists  ✅ this is the change you asked for
+    report_df["Min Error (Best)"] = report_df.apply(
+        lambda r: fmt_mean_pm_std(r["final_error_mean"], r["final_error_std"]), axis=1
+    )
+    report_df["Min Error (Random)"] = report_df.apply(
+        lambda r: fmt_mean_pm_std(r["baseline_error_mean"], r["baseline_error_std"]), axis=1
+    )
+    report_df[r"\% Error $\downarrow$"] = report_df["delta_pct"].apply(fmt_delta)
+
+    final_df = report_df[[
+        "Dataset",
+        "Model",
+        "Track",
+        "Best Strategy",
+        "Min Error (Best)",
+        "Min Error (Random)",
+        r"\% Error $\downarrow$",
+    ]].copy()
+
+    # Stable ordering like your original (AG News block then MNIST block)
+    # Within each dataset, keep a sane deterministic order.
+    final_df["__dataset_order"] = final_df["Dataset"].map({"AG News": 0, "MNIST": 1}).fillna(99).astype(int)
+    final_df = final_df.sort_values(by=["__dataset_order", "Model", "Track"]).drop(columns=["__dataset_order"])
+
+    # -------------------------
+    # Emit LaTeX table (proper environment)
+    # -------------------------
+    tabular = final_df.to_latex(
+        index=False,
+        escape=False,
+        column_format="llccrrr",
+        header=[
+            "Dataset",
+            "Model",
+            "Track",
+            "Best Strategy",
+            "Min Error (Best)",
+            "Min Error (Random)",
+            r"\% Error $\downarrow$",
+        ],
+    )
+
+    # Optional: insert an extra \midrule between dataset blocks (AG News / MNIST),
+    # without changing rows/cols. This preserves the “structure” you had visually.
+    lines = tabular.splitlines()
+    out_lines = []
+    last_dataset = None
+    for line in lines:
+        # Data rows have " & " and end with "\\"
+        if " & " in line and line.strip().endswith(r"\\"):
+            dataset_cell = line.split(" & ", 1)[0].strip()
+            if last_dataset is None:
+                last_dataset = dataset_cell
+            elif dataset_cell != last_dataset:
+                out_lines.append(r"\midrule")
+                last_dataset = dataset_cell
+        out_lines.append(line)
+    tabular = "\n".join(out_lines)
+
+    latex_string = (
+        "\\begin{table}[ht]\n"
+        "\\centering\n"
+        "\\caption{Comparison of the best active learning strategy against a random baseline. Error reduction is colored green for improvement and red for degradation.}\n"
+        "\\label{tab:main_results}\n"
+        + tabular +
+        "\\end{table}\n"
+    )
+
+    latex_path = Path(output_dir) / "publication_table.tex"
     latex_path.write_text(latex_string)
     console.print(f"✅ LaTeX table saved to [cyan]{latex_path}[/cyan]")
     console.print(latex_string)
